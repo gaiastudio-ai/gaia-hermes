@@ -1,0 +1,106 @@
+phase,command,displayName,description,agent
+setup,/gaia-test-strategy,Test Strategy,Unified test-strategy + test-framework setup (collapses former test-design and test-framework),test-architect
+1-analysis,/gaia-advanced-elicitation,Advanced Elicitation,Deep requirements elicitation,orchestrator
+1-analysis,/gaia-brainstorm,Brainstorm Project,Brainstorm a new project idea,analyst
+1-analysis,/gaia-domain-research,Domain Research,Research a domain or industry,analyst
+1-analysis,/gaia-market-research,Market Research,Conduct market research,analyst
+1-analysis,/gaia-product-brief,Create Product Brief,Create a product brief,analyst
+1-analysis,/gaia-tech-research,Technical Research,Research a technology,analyst
+2-planning,/gaia-create-prd,Create PRD,Create a Product Requirements Document,pm
+2-planning,/gaia-create-ux,Create UX Design,Plan UX patterns and design specs,ux-designer
+2-planning,/gaia-edit-prd,Edit PRD,Edit an existing PRD,pm
+2-planning,/gaia-edit-ux,Edit UX Design,Edit an existing UX design,ux-designer
+2-planning,/gaia-validate-design-a11y,Design A11y Validation,Planning-phase a11y design review — WCAG design contrast / semantic / keyboard / ARIA,ux-designer
+2-planning,/gaia-validate-prd,Validate PRD (deprecated),DEPRECATED — Use /gaia-val-validate instead,pm
+3-solutioning,/gaia-create-arch,Create Architecture,Design system architecture,architect
+3-solutioning,/gaia-create-epics,Create Epics and Stories,Break requirements into epics and stories,pm
+3-solutioning,/gaia-edit-arch,Edit Architecture,Edit an existing architecture document,architect
+3-solutioning,/gaia-infra-design,Infrastructure Design,Design deployment topology and IaC,devops
+3-solutioning,/gaia-readiness-check,Implementation Readiness,Validate readiness for implementation,architect
+3-solutioning,/gaia-threat-model,Security Threat Model,Create STRIDE/DREAD threat model,security
+4-implementation,/gaia-action-items,Action Items,"Process and resolve action items from retro, triage, tech-debt, and correct-course",orchestrator
+4-implementation,/gaia-add-feature,Add Feature,"Triage and route a fix, enhancement, or feature through affected artifacts",pm
+4-implementation,/gaia-add-stories,Add Stories,Add new stories to existing epics or create new epics with stories,pm
+4-implementation,/gaia-change-request,Change Request (deprecated),DEPRECATED — Use /gaia-add-feature instead. Redirects to add-feature workflow.,pm
+4-implementation,/gaia-check-dod,Check Definition of Done,Check Definition of Done criteria for a story before review transition,sm
+4-implementation,/gaia-check-review-gate,Check Review Gate,Check composite review gate status and transition story to done if all reviews pass,sm
+4-implementation,/gaia-config-compliance,Config Compliance,Edit the compliance section of project-config.yaml — section-scoped editor that preserves YAML comments and formatting,orchestrator
+4-implementation,/gaia-config-env,Config Env,Edit the environments section of project-config.yaml — section-scoped editor that preserves YAML comments and formatting,orchestrator
+4-implementation,/gaia-config-gates,Config Gates,Edit the gates section of project-config.yaml — per-gate severity overrides,orchestrator
+4-implementation,/gaia-config-rubric,Config Rubric,DEPRECATED — retired because schema v2.0.0 has no `rubrics` top-level property; use /gaia-config-severity and /gaia-config-gates instead,orchestrator
+4-implementation,/gaia-config-severity,Config Severity,Edit the severity section of project-config.yaml — 5-into-3 severity map (Critical/High/Medium/Low/Info → BLOCKED/REQUEST_CHANGES/APPROVE),orchestrator
+4-implementation,/gaia-config-show,Config Show,Display project-config.yaml read-only (entire file or single section) — no write operations,orchestrator
+4-implementation,/gaia-config-stack,Config Stack,Edit the stacks section of project-config.yaml — section-scoped editor that preserves YAML comments and formatting,orchestrator
+4-implementation,/gaia-config-test,Config Test,Edit the test_execution section of project-config.yaml — section-scoped editor that preserves YAML comments and formatting,orchestrator
+4-implementation,/gaia-config-tool,Config Tool,Edit the tools section of project-config.yaml — section-scoped editor that preserves YAML comments and formatting,orchestrator
+4-implementation,/gaia-config-validate,Config Validate,Validate project-config.yaml against project-config.schema.json — pass --rubric for legacy layered-loader validation,validator
+4-implementation,/gaia-correct-course,Correct Course,Manage sprint scope changes,sm
+4-implementation,/gaia-create-stakeholder,Create Stakeholder,Scaffold new stakeholder file for Party Mode,orchestrator
+4-implementation,/gaia-create-story,Create Story,Create detailed story file,sm
+4-implementation,/gaia-dev-story,Dev Story,Implement a user story,dev-*
+4-implementation,/gaia-epic-status,Epic Status,Show epic completion dashboard across all sprints,sm
+4-implementation,/gaia-feed,Feed,"One-gesture external-document ingestion into the Brain knowledge layer — fetch, strip, write provenance frontmatter, register brain-index entry",orchestrator
+4-implementation,/gaia-fill-test-gaps,Fill Test Gaps,End-to-end remediation for test-gap-analysis findings (sub-workflow composition),test-architect
+4-implementation,/gaia-fix-story,Fix Story,Fix story issues flagged by validation,sm
+4-implementation,/gaia-knowledge-refresh,Knowledge Refresh,"Re-fetch ingested sources and replace only what changed — hash-gated three-way reconcile (skip on match, overwrite on diff, mark failed and preserve stale file)",orchestrator
+4-implementation,/gaia-list-tools,List Tools,"Enumerate every tool adapter (built-in + custom) grouped by category, with three-state availability",orchestrator
+4-implementation,/gaia-refresh-ground-truth,Refresh Ground Truth,Rescan filesystem and update ground truth,validator
+4-implementation,/gaia-retro,Retrospective,Post-sprint retrospective,sm
+4-implementation,/gaia-review-a11y,Accessibility Review,Pre-merge a11y gate (conditional on compliance.ui_present) — WCAG 2.1,ux-designer
+4-implementation,/gaia-review-all,Run All Reviews,Runs all 6 review workflows sequentially via subagents,orchestrator
+4-implementation,/gaia-review-code,Code Review,Perform code review,dev-*
+4-implementation,/gaia-review-mobile,Mobile Review,"Pre-merge mobile review gate — manifest, entitlements, signing, store metadata, privacy manifest, universal-links validators",mobile-dev
+4-implementation,/gaia-review-qa,QA Generate Tests,Generate automated QA tests,qa
+4-implementation,/gaia-review-security,Security Review,OWASP security review (pre-merge gate and anytime task),security
+4-implementation,/gaia-sprint-close,Sprint Close,"Close the active sprint — mark sprint-status.yaml closed, archive it, emit sprint_closed event",sm
+4-implementation,/gaia-sprint-plan,Sprint Planning,Plan sprint from epics and stories,sm
+4-implementation,/gaia-sprint-review,Sprint Review,"End-of-sprint review — validation + execution tracks, composite verdict; routes to /gaia-sprint-close (PASSED) or /gaia-correct-course (FAILED)",sm
+4-implementation,/gaia-sprint-status,Sprint Status,Show current sprint status,sm
+4-implementation,/gaia-tool-info,Tool Info,Render full adapter.json metadata + availability for one named tool adapter,orchestrator
+4-implementation,/gaia-triage-findings,Triage Findings,Triage development findings into backlog stories,sm
+4-implementation,/gaia-unfeed,Unfeed,"Remove an ingested document from the Brain knowledge layer — delete ingested file, de-register brain-index entry, re-render MOC",orchestrator
+4-implementation,/gaia-val-validate,Validate Artifact,Validate artifact against codebase and ground truth,validator
+4-implementation,/gaia-val-validate-plan,Validate Plan,Validate implementation plan before execution,validator
+4-implementation,/gaia-validate-rubric,Validate Rubric,Validate a single rubric file (JSON or YAML) against rubric.schema.json,validator
+4-implementation,/gaia-validate-story,Validate Story,Full story validation with factual verification,validator
+5-deployment,/gaia-deploy,Deploy,"Deployment orchestrator — pre-deploy gate, adapter-mediated deploy, health check, post-deploy smoke, final verdict (no auto-rollback)",devops
+5-deployment,/gaia-deploy-checklist,Deployment Checklist,Pre-deployment verification checklist,devops
+5-deployment,/gaia-deploy-post,Post-Deploy Verify,Post-deployment health validation,devops
+5-deployment,/gaia-release-plan,Release Plan,Staged rollout and release strategy,devops
+5-deployment,/gaia-rollback-plan,Rollback Plan,Rollback trigger criteria and procedures,devops
+5-deployment,/gaia-test-a11y,Accessibility Testing,Post-deploy a11y smoke (axe-core/pa11y/Lighthouse adapters),test-architect
+quick-flow,/gaia-quick-dev,Quick Dev,Implement a quick spec,dev-*
+quick-flow,/gaia-quick-spec,Quick Spec,Create a quick tech spec,dev-*
+anytime,/gaia-atdd,ATDD,Generate failing acceptance tests,test-architect
+anytime,/gaia-brainstorming,Brainstorming,Facilitated brainstorming session,orchestrator
+anytime,/gaia-bridge-enable,Bridge Toggle,Enable or disable the Test Execution Bridge in global.yaml,orchestrator
+anytime,/gaia-brownfield,Brownfield Onboarding,Onboard existing project to GAIA,orchestrator
+anytime,/gaia-ci-edit,CI Edit,Edit ci_cd.promotion_chain in global.yaml (add/remove/edit/reorder environments),test-architect
+anytime,/gaia-config-ci,CI Setup,Scaffold CI/CD quality pipeline,test-architect
+anytime,/gaia-creative-sprint,Creative Sprint,Multi-agent creative pipeline: empathize → solve → innovate,orchestrator
+anytime,/gaia-design-thinking,Design Thinking,Guide human-centered design process,design-thinking-coach
+anytime,/gaia-document-project,Document Project,Document project for AI context,analyst
+anytime,/gaia-edit-test-plan,Edit Test Plan,Edit an existing test plan — add test cases without regenerating,test-architect
+anytime,/gaia-help,Help,Context-sensitive help with project-state-aware routing (greenfield / brownfield / post-update / healthy) — uses lib/framework-version.sh + stale-flag markers to detect drift state,orchestrator
+anytime,/gaia-init,GAIA Init,Greenfield conversational setup — bootstrap project-config.yaml + starter CI,orchestrator
+anytime,/gaia-innovation,Innovation Strategy,Identify disruption opportunities,innovation-strategist
+anytime,/gaia-meeting,Meeting,"Peer-to-peer multi-agent discussion (seven-phase lifecycle, charter required, decide default mode, round-robin turn arbitration, state-free write boundary)",orchestrator
+anytime,/gaia-memory-hygiene,Memory Hygiene,"Detect stale, contradicted, or superseded decisions in agent memory sidecars",orchestrator
+anytime,/gaia-migrate,GAIA Migrate / Reconcile,v1-to-v2 migration AND v2-to-v2 config reconciliation via gaia-reconcile-v2.sh dispatch,orchestrator
+anytime,/gaia-mobile-testing,Mobile Testing,Create mobile test plan covering devices and responsive testing,test-architect
+anytime,/gaia-nfr,NFR Assessment,Assess non-functional requirements,test-architect
+anytime,/gaia-party,Party Mode,Multi-agent group discussion,orchestrator
+anytime,/gaia-perf-deepdive,Performance Review,Analyze performance bottlenecks,performance
+anytime,/gaia-perf-testing,Performance Testing,Create performance test plan with load testing and CI gates,test-architect
+anytime,/gaia-pitch-deck,Pitch Deck,Create investor/partner pitch deck,presentation-designer
+anytime,/gaia-problem-solving,Problem Solving,Apply systematic problem-solving methodologies with resolution routing,problem-solver
+anytime,/gaia-project-context,Generate Project Context,Generate project context for AI,analyst
+anytime,/gaia-review-test,Test Review,Review test quality,test-architect
+anytime,/gaia-slide-deck,Slide Deck,Create presentation slide deck,presentation-designer
+anytime,/gaia-storytelling,Storytelling,Craft compelling narratives,storyteller
+anytime,/gaia-teach-testing,Teach Me Testing,Teach testing progressively,test-architect
+anytime,/gaia-test-automate,Test Automation,Expand automated test coverage,test-architect
+anytime,/gaia-test-gap-analysis,Test Gap Analysis,Scan test suite against requirements to identify coverage gaps,test-architect
+anytime,/gaia-test-manual,Manual Test,Agent-driven manual verification — exercises a target as a real user would (disambiguated from automated gaia-test-run),manual-tester
+anytime,/gaia-test-run,Test Run,Manual any-environment test runner — honours test_execution.{tier}.placement; supports --tag/--story/--file targeting,test-architect
+anytime,/gaia-trace,Traceability,Generate traceability matrix,test-architect

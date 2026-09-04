@@ -1,0 +1,55 @@
+# Gaia orchestrator settings
+#
+# Lives at $HERMES_HOME/gaia.yaml (for the "gaia" profile that is
+# ~/.hermes/profiles/gaia/gaia.yaml). install.sh writes this file for you;
+# edit it by hand any time — the scripts read it on every call.
+
+claude:
+  # "local"  -> Claude Code is installed on the same machine as Hermes
+  # "ssh"    -> Claude Code lives on another machine reachable over SSH
+  mode: local
+
+  # Path to (or name of) the `claude` binary ON THE CLAUDE CODE HOST.
+  bin: claude
+
+  # Only used when mode == ssh. Key-based, non-interactive login required.
+  ssh_host: ""              # e.g. julien@um890.local
+  ssh_opts: "-o BatchMode=yes -o ConnectTimeout=10"
+
+  # Optional overrides passed to every `claude -p` run. Leave empty for defaults.
+  model: ""                 # e.g. claude-sonnet-4-5 / claude-opus-4-1
+  max_turns: 300            # safety cap per headless run
+  max_budget_usd: 0         # 0 = no cap (API-key auth only; ignored on subscriptions)
+
+# Root directory for new projects ON THE CLAUDE CODE HOST. `~` is expanded there.
+projects_root: ~/projects
+
+github:
+  # Leave both empty and Gaia asks the stakeholder per project (recommended).
+  default_org: ""           # e.g. gaiastudio-ai   (empty = personal account / ask)
+  default_visibility: ""    # private | public | internal (empty = ask)
+
+stakeholder:
+  name: ""                  # how Gaia addresses you, e.g. "Julien"
+  timezone: ""              # e.g. Europe/Berlin — used when Gaia reports times
+
+notify:
+  # Where interrupts go. Hermes' gateway decides the actual transport;
+  # this only tells Gaia which events are worth an interrupt.
+  on_stakeholder_question: true
+  on_phase_complete: true
+  on_gate_rejection: true
+  on_failure: true
+  on_progress: false        # true = chatty; every completed GAIA command pings you
+
+lifecycle:
+  # Which phases Gaia runs autonomously after /gaia-init. Set one to false to
+  # make Gaia stop and ask before starting it.
+  autonomous:
+    analysis: true          # /gaia-brainstorm, research
+    planning: true          # /gaia-create-prd, /gaia-create-ux
+    solutioning: true       # /gaia-create-arch, /gaia-create-epics, readiness
+    implementation: true    # sprint-plan -> create-story -> dev-story -> review-all -> sprint-close
+    deployment: false       # deploy checklists touch real infrastructure: ask first
+  # How many times Gaia retries a failing story/review before escalating.
+  max_gate_retries: 3

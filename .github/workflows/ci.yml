@@ -1,0 +1,37 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -x -S warning install.sh uninstall.sh profile/skills/gaia-orchestrator/scripts/*.sh
+      - name: install into a fake Hermes home
+        run: |
+          export HERMES_ROOT="$RUNNER_TEMP/hermes"
+          mkdir -p "$HERMES_ROOT" && echo "model: {default: test}" > "$HERMES_ROOT/config.yaml"
+          ./install.sh --claude-mode local --claude-bin /nonexistent/claude --projects-root "$RUNNER_TEMP/projects" --stakeholder ci --yes --skip-doctor
+          test -f "$HERMES_ROOT/profiles/gaia/gaia.yaml"
+          test -f "$HERMES_ROOT/profiles/gaia/SOUL.md"
+          test -x "$HERMES_ROOT/profiles/gaia/skills/gaia-orchestrator/scripts/gaia-claude.sh"
+      - name: state registry smoke test
+        run: |
+          export HERMES_HOME="$RUNNER_TEMP/hermes/profiles/gaia"
+          S="$HERMES_HOME/skills/gaia-orchestrator/scripts"
+          bash "$S/gaia-project.sh" init demo --name Demo --path /tmp/demo
+          bash "$S/gaia-project.sh" phase demo init
+          bash "$S/gaia-project.sh" question add demo q1 "which org?"
+          bash "$S/gaia-project.sh" question open demo | grep -q q1
+          bash "$S/gaia-project.sh" question answer demo q1 "personal"
+          bash "$S/gaia-project.sh" summary demo
+      - name: doctor reports a missing claude cleanly
+        run: |
+          export HERMES_HOME="$RUNNER_TEMP/hermes/profiles/gaia"
+          S="$HERMES_HOME/skills/gaia-orchestrator/scripts"
+          set +e; out=$(bash "$S/gaia-doctor.sh" --json-only); rc=$?; set -e
+          echo "$out"; test $rc -eq 1; echo "$out" | grep -q '"claude"'
