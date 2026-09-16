@@ -51,5 +51,32 @@ lifecycle:
     solutioning: true       # /gaia-create-arch, /gaia-create-epics, readiness
     implementation: true    # sprint-plan -> create-story -> dev-story -> review-all -> sprint-close
     deployment: false       # deploy checklists touch real infrastructure: ask first
+  # Holds. A hold STOPS the loop, puts a document in front of the stakeholder,
+  # and nothing proceeds until they answer. It is not a notification: a phase
+  # that was "notified" completed and continued (Portfolio Agents, Sept 2026 —
+  # a PRD, eighteen architecture revisions and a merge to main with nobody
+  # asked). Both default to ON. Turning one off is a decision: say why here.
+  holds:
+    product_brief: true     # after the brief, when Gaia authored it from research. Skipped —
+                            # and the skip recorded with its reason — when the stakeholder
+                            # supplied the brief themselves.
+    implementation: true    # before any story runs: the PRD and the architecture together,
+                            # with the readiness verdict on the card. No story until approved.
   # How many times Gaia retries a failing story/review before escalating.
   max_gate_retries: 3
+
+# Where a hold is presented and answered. The hold itself lives in the project
+# file either way; the backend is only the transport.
+#   channel  -> Gaia sends the card text on its messaging channel and records an
+#               open stakeholder question; the stakeholder answers by replying
+#               approve / send back / stop and Gaia records it (gaia-hold.sh answer).
+#   command  -> Gaia runs hold_commands.file with HOLD_SLUG, HOLD_NAME, HOLD_REF,
+#               HOLD_SENDER, HOLD_SUBJECT, HOLD_ASK and HOLD_ARTIFACTS in the
+#               environment; the command files the hold somewhere durable (a row,
+#               a card with buttons, a re-send schedule, a dashboard entry) and
+#               prints an id. Gaia then runs hold_commands.status with HOLD_ID and
+#               reads one line: pending | decided:<answer> | withdrawn.
+hold_backend: channel
+hold_commands:
+  file: ""                  # e.g. "vera-founder-gate hold-file"
+  status: ""                # e.g. "vera-founder-gate status $HOLD_ID"

@@ -77,6 +77,7 @@ From here Gaia keeps going. Ask "status" any time, "pause pantry-pal" to stop, "
 | runs the lifecycle autonomously, phase by phase, sprint by sprint | uses a GAIA command that is not in `references/gaia-commands.csv` |
 | answers technical/process questions as the team's lead | asks you sprint-planning or retro questions |
 | relays business/product/budget questions to you, rewritten for a non-engineer | invents a stakeholder answer to unblock a run |
+| stops at two holds — the product brief she wrote, and the PRD + architecture before any story — until you answer | continues past a hold, answers it herself, or lets it time out into a default |
 | messages you on phase completion, gate rejections, failures | pings you on routine progress (unless `notify.on_progress: true`) |
 | keeps per-project state and resumes after a restart | stores credentials — env-var names only |
 
@@ -123,6 +124,8 @@ From here Gaia keeps going. Ask "status" any time, "pause pantry-pal" to stop, "
 | `projects_root` | where new projects are created on the Claude Code machine |
 | `github.default_org` / `default_visibility` | leave empty and Gaia asks per project |
 | `lifecycle.autonomous.*` | set a phase to `false` to make Gaia ask go/no-go before starting it |
+| `lifecycle.holds.*` | `product_brief` and `implementation`, both on by default: the loop stops and the document goes to you; nothing proceeds until you answer |
+| `hold_backend` / `hold_commands.*` | `channel` (a card on your messaging channel, you reply) or `command` (plug in an approvals system with buttons and re-sends) |
 | `notify.on_progress` | `true` if you want a message after every GAIA command |
 
 ## Using the scripts by hand

@@ -44,6 +44,12 @@ Never run `/gaia-init` on a directory that already has
 Phase complete when the product brief exists. Notify the stakeholder with a
 3-line summary if `notify.on_phase_complete`.
 
+**HOLD `product_brief`** (`lifecycle.holds.product_brief`, default on). If Gaia
+authored the brief, the loop stops here and the brief goes to the stakeholder;
+planning does not start until they approve. If the stakeholder supplied the
+brief, the hold is skipped and the skip is recorded with its reason. See
+SKILL.md Procedure 2 step 3.
+
 ## 3. Planning (`lifecycle.autonomous.planning`)
 
 | label | command | notes |
@@ -66,6 +72,11 @@ artifact they should actually read.
 | infra | `/gaia-infra-design` | when deployment is in scope |
 | epics | `/gaia-create-epics` | |
 | readiness | `/gaia-readiness-check` | gate: must pass before implementation |
+
+**HOLD `implementation`** (`lifecycle.holds.implementation`, default on). After
+readiness, the loop stops and the PRD and the architecture go to the stakeholder
+together, with the readiness verdict on the card. No sprint plan and no story
+runs until they approve. A `stop` pauses the whole project.
 
 ## 5. Implementation loop (`lifecycle.autonomous.implementation`)
 

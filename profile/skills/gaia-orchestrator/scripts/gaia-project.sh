@@ -99,8 +99,10 @@ elif cmd == "list":
         if f.endswith(".yaml"):
             d = load(os.path.join(state_dir, f))
             openq = [q for q in d.get("questions", []) if not q.get("answered")]
+            openh = [n for n, h in (d.get("holds") or {}).items() if (h or {}).get("status") == "pending"]
             rows.append({"slug": d.get("slug"), "name": d.get("name"), "phase": d.get("phase"),
-                         "sprint": d.get("sprint"), "open_questions": len(openq), "updated": d.get("updated")})
+                         "sprint": d.get("sprint"), "open_questions": len(openq), "open_holds": openh,
+                         "paused": bool(d.get("paused")), "updated": d.get("updated")})
     print(json.dumps(rows, indent=2))
 elif cmd == "get":
     p, d = must(rest[0])
@@ -142,6 +144,11 @@ elif cmd == "summary":
     print(f"  last cmd:  {d.get('last_command') or '-'}  (session {d.get('last_session_id') or '-'})")
     print(f"  open questions: {len(openq)}")
     for q in openq: print(f"    [{q['audience']}] {q['id']}: {q['text'][:120]}")
+    for n, h in (d.get("holds") or {}).items():
+        h = h or {}
+        print(f"  hold {n}: {h.get('status')}" + (f" since {h.get('opened')}" if h.get('status') == 'pending' else "")
+              + (f" — {h.get('reason')}" if h.get('status') == 'skipped' else "")
+              + (f" ({h.get('answer')})" if h.get('answer') else ""))
     for e in d.get("log", [])[-5:]: print(f"  {e['t']}  {e['msg']}")
 elif cmd == "delete":
     p, d = must(rest[0]); os.remove(p); print(json.dumps({"ok": True}))

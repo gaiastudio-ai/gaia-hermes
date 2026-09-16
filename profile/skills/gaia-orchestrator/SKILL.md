@@ -1,7 +1,7 @@
 ---
 name: gaia-orchestrator
 description: Run software projects end to end with the GAIA framework through headless Claude Code (`claude -p`). Creates projects, initialises them with /gaia-init, drives the full GAIA lifecycle autonomously, routes questions between the stakeholder and the technical team, and keeps per-project state. Use for "new project", "start a project", "build me …", "project status", "continue <project>", or any GAIA command.
-version: 1.0.0
+version: 1.1.0
 platforms: [linux, macos]
 metadata:
   hermes:
@@ -41,6 +41,7 @@ If `$HERMES_HOME` is unset in the shell, use `~/.hermes/profiles/gaia` (or `~/.h
 | `gaia-new-project.sh` | create project dir + git + optional GitHub repo, register state |
 | `gaia-claude.sh` | run `claude -p` for a project (`run`, `wait`, `status`, `show`, `tail`) |
 | `gaia-project.sh` | project state: `init`, `list`, `get`, `set`, `log`, `phase`, `question`, `summary` |
+| `gaia-hold.sh` | stakeholder holds: `open`, `check`, `answer`, `skip` — the loop stops until the stakeholder answers |
 
 Every script prints a JSON line on stdout you can parse; human-readable detail
 goes to stderr.
@@ -90,14 +91,58 @@ Trigger: the stakeholder describes something they want built, or says "new proje
 Loop until the project reaches `deployment` (or `implementation` if
 `lifecycle.autonomous.deployment` is false) or a stakeholder gate is open:
 
-1. `bash "$S/gaia-project.sh" summary <slug>` — know the phase, sprint, story, open questions.
+1. `bash "$S/gaia-project.sh" summary <slug>` — know the phase, sprint, story, open
+   questions and holds. If the project is `paused`, stop.
 2. If there are open stakeholder questions, stop: you are waiting for the human.
-3. Pick the next command from `references/lifecycle.md` (or the last `GAIA-DONE`
+3. **Holds** (`lifecycle.holds.*`, both on by default). Two points in the lifecycle
+   stop the loop and put a document in front of the stakeholder; nothing proceeds
+   until they answer. Run `bash "$S/gaia-hold.sh" check <slug> <hold>` and act on
+   `status`:
+   - `none` and the hold is enabled → open it (below) and STOP. `pending` → STOP;
+     you are waiting for the human. `approved` → proceed. `skipped` → proceed.
+   - `send_back` → ask the stakeholder for their direction as an ordinary
+     stakeholder question (`gaia-project.sh question add <slug> hold:<hold>:direction …`),
+     STOP; when it is answered, re-run the phase with their words and open the
+     hold again. Direction is a paragraph from them, never a field on the card.
+   - `stopped` → the project is now `paused`; stop and do nothing until the
+     stakeholder resumes it (`gaia-project.sh set <slug> paused false`).
+   - `withdrawn` → treat as `none`: open it again on the next pass.
+
+   **Hold `product_brief`** — checked before the first planning command. If the
+   stakeholder supplied the brief themselves, do not open it; record that:
+   `gaia-hold.sh skip <slug> product_brief --reason "stakeholder supplied the brief on <date> (<file>)"`.
+   A hold that does not fire must say it did not fire and why. Otherwise:
+   ```
+   bash "$S/gaia-hold.sh" open <slug> product_brief \
+     --subject "Product brief: <project name>" \
+     --ask "Gaia wrote this brief from the brainstorm and research. Approve it and planning starts; send it back and I will ask what to change; stop and the project pauses." \
+     --artifact "brief: <GitHub URL of the brief at its commit>" --artifact "brief (path): <path>"
+   ```
+   **Hold `implementation`** — checked after solutioning, before any sprint plan
+   or story. The card carries the PRD and the architecture together AND the
+   readiness verdict, so the stakeholder is never asked to approve a plan whose
+   own gate says fail:
+   ```
+   bash "$S/gaia-hold.sh" open <slug> implementation \
+     --subject "Ready to build? <project name> — readiness <PASS|CONDITIONAL PASS|FAIL>, <n> critical blockers" \
+     --ask "The PRD and the architecture are below. Readiness verdict: <verdict>. Approve and the first sprint is planned and stories run; send back and I will ask what to change; stop and the project pauses." \
+     --artifact "PRD: <GitHub URL>" --artifact "architecture: <GitHub URL>" --artifact "readiness report: <GitHub URL>"
+   ```
+   Read the verdict from the readiness report's frontmatter (`gate_verdict`,
+   `critical_blockers`); if the report is missing, say so on the card instead of
+   guessing.
+
+   With `hold_backend: channel`, `open` prints `send_text`: send it to the
+   stakeholder verbatim. When their reply arrives, record it:
+   `bash "$S/gaia-hold.sh" answer <slug> <hold> <approve|send_back|stop>`.
+   With `hold_backend: command`, the configured command files the hold and
+   `check` reads the answer back; you send nothing yourself.
+4. Pick the next command from `references/lifecycle.md` (or the last `GAIA-DONE`
    summary's recommendation if it names a command in `gaia-commands.csv`).
-4. Check the phase's autonomy flag in `gaia.yaml` (`lifecycle.autonomous.<phase>`).
+5. Check the phase's autonomy flag in `gaia.yaml` (`lifecycle.autonomous.<phase>`).
    If false and you are about to *start* that phase, send the stakeholder a
    go/no-go message and stop until they answer.
-5. Run it. For anything that writes code (`/gaia-dev-story`, `/gaia-review-all`,
+6. Run it. For anything that writes code (`/gaia-dev-story`, `/gaia-review-all`,
    `/gaia-brownfield`, `/gaia-deploy`) use background mode so the terminal tool
    never times out:
    ```
@@ -106,10 +151,10 @@ Loop until the project reaches `deployment` (or `implementation` if
    bash "$S/gaia-claude.sh" wait <run_id> --timeout 240      # repeat while status == running
    ```
    For quick commands (`/gaia-sprint-status`, `/gaia-config-*`) run in the foreground.
-6. Handle the result with Procedure 3.
-7. On phase transitions: `gaia-project.sh phase <slug> <phase>`, `gaia-project.sh log`,
+7. Handle the result with Procedure 3.
+8. On phase transitions: `gaia-project.sh phase <slug> <phase>`, `gaia-project.sh log`,
    and — if `notify.on_phase_complete` — one short message to the stakeholder.
-8. Keep `sprint` and `current_story` updated during the implementation loop.
+9. Keep `sprint` and `current_story` updated during the implementation loop.
 
 Between Hermes turns, use the cron/scheduling tool to schedule a "continue
 <slug>" check-in (every 30–60 min while a background run is active) so long
@@ -164,3 +209,8 @@ Parse the JSON from `gaia-claude.sh` and branch on `status`:
 - Never push credentials into prompts, logs or state. Env-var names only.
 - Never message the stakeholder about routine progress unless `notify.on_progress` is true.
 - If the doctor fails, you do not work. Fix or escalate.
+- A hold is answered by the stakeholder or it is not answered. Never answer a
+  hold yourself, never reclassify it as technical, never let it time out into a
+  default. A hold that has been pending for days is still pending; the right
+  action is nothing, and the cron check-in for a project waiting on a hold is
+  cancelled, not repeated.
