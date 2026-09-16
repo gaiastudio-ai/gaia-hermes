@@ -1,7 +1,7 @@
 ---
 name: gaia-orchestrator
 description: Run software projects end to end with the GAIA framework through headless Claude Code (`claude -p`). Creates projects, initialises them with /gaia-init, drives the full GAIA lifecycle autonomously, routes questions between the stakeholder and the technical team, and keeps per-project state. Use for "new project", "start a project", "build me …", "project status", "continue <project>", or any GAIA command.
-version: 1.1.0
+version: 1.1.1
 platforms: [linux, macos]
 metadata:
   hermes:
@@ -92,7 +92,11 @@ Loop until the project reaches `deployment` (or `implementation` if
 `lifecycle.autonomous.deployment` is false) or a stakeholder gate is open:
 
 1. `bash "$S/gaia-project.sh" summary <slug>` — know the phase, sprint, story, open
-   questions and holds. If the project is `paused`, stop.
+   questions and holds. If the project is `paused`, stop. If the summary shows a
+   **STAKEHOLDER DIRECTIVE**, it is the stakeholder's standing instruction for
+   this project: follow it in the order it gives, ahead of the lifecycle table,
+   and do not clear it yourself — it is cleared by the stakeholder
+   (`gaia-project.sh set <slug> directive null`) or by a hold they answer.
 2. If there are open stakeholder questions, stop: you are waiting for the human.
 3. **Holds** (`lifecycle.holds.*`, both on by default). Two points in the lifecycle
    stop the loop and put a document in front of the stakeholder; nothing proceeds

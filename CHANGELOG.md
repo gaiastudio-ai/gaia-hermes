@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1 — 2026-09-16
+
+- Standing stakeholder directive: `gaia-project.sh set <slug> directive "<text>"`
+  records an instruction the loop follows ahead of the lifecycle table until the
+  stakeholder clears it. `summary` prints it. Used to make blocker-clearing work
+  visible and ordered rather than discovered by validation passes.
+
 ## 1.1.0 — 2026-09-16
 
 Stakeholder holds: a hold stops the loop, puts a document in front of the

@@ -8,6 +8,7 @@
 #   gaia-project.sh list
 #   gaia-project.sh get <slug> [dotted.key]
 #   gaia-project.sh set <slug> <dotted.key> <value>      # value: string|number|true|false|null
+#   gaia-project.sh set <slug> directive "<text>"        # standing stakeholder directive: the loop obeys it over the lifecycle table until set to null
 #   gaia-project.sh log <slug> "<message>"               # append to decision/progress log
 #   gaia-project.sh question add <slug> <id> "<question text>" [--audience stakeholder]
 #   gaia-project.sh question answer <slug> <id> "<answer>"
@@ -142,6 +143,9 @@ elif cmd == "summary":
     print(f"  phase:     {d.get('phase')}   gaia-init: {'yes' if d.get('gaia_initialised') else 'no'}{'   PAUSED' if d.get('paused') else ''}")
     print(f"  sprint:    {d.get('sprint') or '-'}   story: {d.get('current_story') or '-'}")
     print(f"  last cmd:  {d.get('last_command') or '-'}  (session {d.get('last_session_id') or '-'})")
+    if d.get("directive"):
+        print("  STAKEHOLDER DIRECTIVE (binding until cleared with: set <slug> directive null):")
+        for line in str(d["directive"]).splitlines(): print(f"    {line}")
     print(f"  open questions: {len(openq)}")
     for q in openq: print(f"    [{q['audience']}] {q['id']}: {q['text'][:120]}")
     for n, h in (d.get("holds") or {}).items():
