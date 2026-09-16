@@ -87,6 +87,22 @@ load_settings() {
   CLAUDE_MAX_TURNS="$(settings_get claude.max_turns 300)"
   CLAUDE_MAX_BUDGET="$(settings_get claude.max_budget_usd 0)"
   PROJECTS_ROOT="$(settings_get projects_root "~/projects")"
+  # Normalize a leading ~ before project paths are shell-quoted. Quoting a raw
+  # ~/... path prevents remote shell expansion and creates a literal '~' dir.
+  case "$PROJECTS_ROOT" in
+    "~"|"~/"*)
+      local root_suffix="${PROJECTS_ROOT#\~}"
+      if [ "$CLAUDE_MODE" = local ]; then
+        PROJECTS_ROOT="$HOME$root_suffix"
+      else
+        local remote_home
+        # shellcheck disable=SC2086
+        remote_home="$(ssh $CLAUDE_SSH_OPTS "$CLAUDE_SSH_HOST" 'printf %s "$HOME"' </dev/null)" \
+          || die "cannot resolve home directory on Claude Code host"
+        PROJECTS_ROOT="$remote_home$root_suffix"
+      fi
+      ;;
+  esac
   case "$CLAUDE_MODE" in
     local|ssh) ;;
     *) die "claude.mode must be 'local' or 'ssh' (got '$CLAUDE_MODE')" ;;
