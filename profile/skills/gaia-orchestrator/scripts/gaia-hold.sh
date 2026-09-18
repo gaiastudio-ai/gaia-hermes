@@ -140,6 +140,8 @@ elif cmd == "check":
 elif cmd == "answer":
     if not rest: die("answer needs approve|send_back|stop")
     verdict = classify(rest[0].replace("_", " ")); by = opt(rest, "--by", "stakeholder")
+    # A hold is answered by the stakeholder, never by the agent that opened it.
+    if (by or "").strip().lower() == "gaia": die("answer refused: a hold cannot be answered by Gaia; it stays pending until the stakeholder replies")
     if verdict not in ("approved", "send_back", "stopped"): die("answer must be approve, send_back or stop")
     if h.get("status") != "pending": die(f"hold '{name}' is not pending (status {h.get('status') or 'none'})")
     h["status"] = verdict; h["answered"] = now(); h["answer"] = rest[0]; h["by"] = by
