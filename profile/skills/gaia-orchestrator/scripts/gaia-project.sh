@@ -9,6 +9,7 @@
 #   gaia-project.sh get <slug> [dotted.key]
 #   gaia-project.sh set <slug> <dotted.key> <value>      # value: string|number|true|false|null
 #   gaia-project.sh set <slug> directive "<text>"        # standing stakeholder directive: the loop obeys it over the lifecycle table until set to null
+#   gaia-project.sh set <slug> amend_revision <N|null>   # structured companion to the directive: while set, gaia-claude.sh refuses any new-revision command (/gaia-create-arch)
 #   gaia-project.sh log <slug> "<message>"               # append to decision/progress log
 #   gaia-project.sh question add <slug> <id> "<question text>" [--audience stakeholder]
 #   gaia-project.sh question answer <slug> <id> "<answer>"
@@ -22,7 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lib.sh"
 need_python
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
+usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 [ $# -ge 1 ] || usage
 
 python3 - "$GAIA_STATE_DIR" "$@" <<'PY'
@@ -112,8 +113,13 @@ elif cmd == "get":
     else:
         print(json.dumps(d, indent=2, default=str))
 elif cmd == "set":
-    p, d = must(rest[0]); setdot(d, rest[1], coerce(rest[2])); d["updated"] = now(); dump(p, d)
-    print(json.dumps({"ok": True, rest[1]: coerce(rest[2])}))
+    p, d = must(rest[0]); val = coerce(rest[2])
+    if rest[1] == "amend_revision" and not (val is None or (isinstance(val, int) and not isinstance(val, bool))):
+        # First-class structured field read by gaia-claude.sh's new-revision guard:
+        # an integer revision number to amend, or null to lift the guard. Never prose.
+        sys.exit(f"gaia: amend_revision must be an integer revision number or null (got {rest[2]!r})")
+    setdot(d, rest[1], val); d["updated"] = now(); dump(p, d)
+    print(json.dumps({"ok": True, rest[1]: val}))
 elif cmd == "log":
     p, d = must(rest[0]); d.setdefault("log", []).append({"t": now(), "msg": rest[1]}); d["updated"] = now(); dump(p, d)
     print(json.dumps({"ok": True}))
@@ -146,6 +152,8 @@ elif cmd == "summary":
     if d.get("directive"):
         print("  STAKEHOLDER DIRECTIVE (binding until cleared with: set <slug> directive null):")
         for line in str(d["directive"]).splitlines(): print(f"    {line}")
+    if d.get("amend_revision") is not None:
+        print(f"  amend_revision: {d['amend_revision']}   (new-revision commands refused until: set <slug> amend_revision null)")
     print(f"  open questions: {len(openq)}")
     for q in openq: print(f"    [{q['audience']}] {q['id']}: {q['text'][:120]}")
     for n, h in (d.get("holds") or {}).items():
