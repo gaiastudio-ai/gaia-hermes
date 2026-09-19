@@ -35,3 +35,5 @@ jobs:
           S="$HERMES_HOME/skills/gaia-orchestrator/scripts"
           set +e; out=$(bash "$S/gaia-doctor.sh" --json-only); rc=$?; set -e
           echo "$out"; test $rc -eq 1; echo "$out" | grep -q '"claude"'
+      - name: doctor checks the hold backend
+        run: bash tests/verify-doctor-hold-backend.sh

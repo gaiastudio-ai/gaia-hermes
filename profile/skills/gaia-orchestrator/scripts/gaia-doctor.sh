@@ -10,6 +10,9 @@
 #   6. projects_root exists and is writable
 # Checks (on the Hermes host):
 #   7. python3 present, settings file readable
+#   8. hold backend: when hold_backend is `command`, hold_commands.file and
+#      hold_commands.status are set and the file command is executable
+#      (checked only — the doctor never runs them)
 #
 # Exit 0 when all REQUIRED checks pass, 1 otherwise. Prints a report, then one
 # JSON line ({"ok":bool,"failed":[...],"warnings":[...]}) as the last line.
@@ -90,6 +93,35 @@ if [ -z "$FAILED" ]; then
     # 6. projects root
     if host_exec bash -c "mkdir -p $PROJECTS_ROOT && test -w $PROJECTS_ROOT" >/dev/null 2>&1; then pass "projects_root writable: $PROJECTS_ROOT"; else
       fail "projects-root" "projects_root not writable on the Claude host: $PROJECTS_ROOT"; fi
+  fi
+fi
+
+# 8. hold backend. gaia-hold.sh runs hold_commands on the Hermes host, so this is
+# checked locally. Set + executable only: the configured commands are never run
+# here. `channel` (or no hold_backend key) needs no commands and is skipped.
+if [ -f "$GAIA_SETTINGS" ] && command -v python3 >/dev/null 2>&1; then
+  hold_backend="$(settings_get hold_backend channel | tr '[:upper:]' '[:lower:]')"
+  if [ "$hold_backend" = command ]; then
+    hold_file="$(settings_get hold_commands.file "")"
+    hold_status="$(settings_get hold_commands.status "")"
+    # the minimal YAML parser reads an empty `key: ""` as an empty mapping
+    if [ "$hold_file" = "{}" ]; then hold_file=""; fi
+    if [ "$hold_status" = "{}" ]; then hold_status=""; fi
+    hold_problem=""
+    if [ -z "$hold_file" ]; then hold_problem="hold_commands.file is empty"
+    elif [ -z "$hold_status" ]; then hold_problem="hold_commands.status is empty"
+    else
+      # first word of the command line; a path must be an executable file, a bare name must be on PATH
+      hold_bin="$(python3 -c 'import shlex, sys; print(shlex.split(sys.argv[1])[0])' "$hold_file" 2>/dev/null || true)"
+      hold_bin="$(expand_home "$hold_bin")"
+      case "$hold_bin" in
+        "")  hold_problem="hold_commands.file is unreadable as a command: $hold_file" ;;
+        */*) if [ ! -f "$hold_bin" ] || [ ! -x "$hold_bin" ]; then hold_problem="hold_commands.file is not executable: $hold_bin"; fi ;;
+        *)   type -P "$hold_bin" >/dev/null 2>&1 || hold_problem="hold_commands.file not found on PATH: $hold_bin" ;;
+      esac
+    fi
+    if [ -z "$hold_problem" ]; then pass "hold backend 'command': file + status set, file command executable"; else
+      fail "hold-backend" "hold_backend is 'command' but $hold_problem"; hint "set hold_commands.file and hold_commands.status in $GAIA_SETTINGS (chmod +x the file command), or use hold_backend: channel"; fi
   fi
 fi
 
