@@ -20,9 +20,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 GAIA_SYSTEM_PROMPT_FILE="$GAIA_SKILL_DIR/references/claude-system-prompt.txt"
 
+# GAIA commands whose run creates or increments an architecture revision
+# (writes revision N+1). Matched exactly against the first word of the prompt.
+# /gaia-edit-arch amends the existing document in place and is deliberately
+# NOT listed. Space-separated; widen only with the stakeholder's say-so.
+GAIA_NEW_REVISION_COMMANDS="/gaia-create-arch"
+
 usage() { sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2; }
 
 json_escape() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
+
+# _prompt_command <prompt> — the GAIA command a prompt starts with (first
+# non-blank word), or empty.
+_prompt_command() { printf '%s\n' "$1" | awk 'NF { print $1; exit }'; }
+
+# _amend_revision_guard <slug> <prompt>
+# Refuse to launch a new-revision command while the project's STRUCTURED
+# amend_revision field (gaia-project.sh set <slug> amend_revision <N>) is set.
+# Reads the field only — never directive prose. Returns 0 (launch normally)
+# when the prompt is not a new-revision command, the project has no state
+# file, or amend_revision is null/absent. On refusal: prints one JSON line on
+# stdout, logs the refusal on the project, and exits non-zero before any run
+# record exists.
+_amend_revision_guard() {
+  local slug="$1" prompt="$2" cmd c hit=0 amend
+  cmd="$(_prompt_command "$prompt")"
+  for c in $GAIA_NEW_REVISION_COMMANDS; do [ "$cmd" = "$c" ] && hit=1; done
+  [ "$hit" = 1 ] || return 0
+  [ -f "$GAIA_STATE_DIR/$slug.yaml" ] || return 0
+  amend="$("$SCRIPT_DIR/gaia-project.sh" get "$slug" amend_revision)"
+  case "$amend" in ""|null) return 0 ;; esac
+  local msg amend_json
+  msg="refused $cmd for project '$slug': amend_revision=$amend is set — amend architecture revision $amend (/gaia-edit-arch) instead of writing a new one, or clear the field with: gaia-project.sh set $slug amend_revision null"
+  case "$amend" in *[!0-9]*) amend_json="$(printf '%s' "$amend" | json_escape)" ;; *) amend_json="$amend" ;; esac
+  "$SCRIPT_DIR/gaia-project.sh" log "$slug" "$msg" >/dev/null || true
+  printf '{"ok":false,"status":"refused","field":"amend_revision","amend_revision":%s,"command":%s,"message":%s}\n' \
+    "$amend_json" "$(printf '%s' "$cmd" | json_escape)" "$(printf '%s' "$msg" | json_escape)"
+  printf 'gaia: %s\n' "$msg" >&2
+  exit 3
+}
 
 # ---------------------------------------------------------------- run --------
 cmd_run() {
@@ -52,6 +88,10 @@ cmd_run() {
   esac
   [ -n "$max_turns" ] || max_turns="$CLAUDE_MAX_TURNS"
   [ -n "$model" ] || model="$CLAUDE_MODEL"
+
+  # Structured-field guard: no run id, run dir or meta file exists yet, so a
+  # refusal leaves nothing under $GAIA_RUNS_DIR.
+  _amend_revision_guard "$slug" "$prompt"
 
   local run_id run_dir result_file err_file meta_file
   run_id="$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$label")"
