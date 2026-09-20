@@ -60,6 +60,164 @@ _amend_revision_guard() {
   exit 3
 }
 
+# ------------------------------------------------- audience guard ------------
+# A GAIA-QUESTION routed by `run`/`wait` is recorded against its id under
+# `question_audience.<id>` in the project state (audience, session, run, when
+# asked). A question recorded audience="stakeholder" is then the
+# stakeholder's: it cannot be DOWNGRADED to "technical" by the loop —
+#   - a later block re-emitting that id as technical is refused (the summary
+#     comes back status=refused at the recorded stakeholder audience),
+#   - a `run --resume` of the session that asked it (the loop answering it
+#     itself, whatever the prose says) is refused before anything launches,
+# unless a hold NAMED AFTER THE QUESTION ID was opened after the question was
+# asked and answered by the stakeholder (gaia-hold.sh: status approved,
+# send_back or stopped with `by` not gaia — task B's rule). Only that hold
+# releases it: `questions[].answered` is written by Gaia and carries no
+# provenance, so it is never consulted. A question emitted technical from
+# the start is not guarded (the model's first tagging is its own; what is the
+# stakeholder's by nature is V3's taxonomy, not this guard's), and a
+# technical question later re-emitted as stakeholder is simply upgraded.
+#
+# _audience_state <mode> <slug> [args...]   (python; state file may be absent)
+#   view   <slug> <summary-json>       stdout: the summary JSON, rewritten to
+#                                      status=refused on a downgrade
+#   record <slug> <id> <aud> <sid> <rid> <text>   write/update the record; exit 3
+#                                      (refusal JSON on stdout) on a downgrade
+#   resume <slug> <sid>                exit 3 + refusal JSON when the session's
+#                                      latest recorded question is an unreleased
+#                                      stakeholder question; silent exit 0 otherwise
+_audience_state() {
+  need_python
+  python3 - "$GAIA_STATE_DIR" "$@" <<'PY'
+import sys, os, json, datetime
+state_dir, mode, slug = sys.argv[1], sys.argv[2], sys.argv[3]
+rest = sys.argv[4:]
+try:
+    import yaml
+    def load(p):
+        with open(p) as f: return yaml.safe_load(f) or {}
+    def dump(p, d):
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f: yaml.safe_dump(d, f, sort_keys=False, allow_unicode=True)
+        os.replace(tmp, p)
+except ImportError:
+    def load(p):
+        with open(p) as f: return json.load(f)
+    def dump(p, d):
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f: json.dump(d, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, p)
+
+def now(): return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def logline(d, msg): d.setdefault("log", []).append({"t": now(), "msg": msg})
+
+path = os.path.join(state_dir, slug + ".yaml")
+have_state = os.path.exists(path)
+d = load(path) if have_state else {}
+recs = d.get("question_audience") or {}
+
+REQUIRE = "a stakeholder-answered hold is required"
+def release_howto(qid):
+    return (f"{REQUIRE}: open one named after the question id "
+            f"(gaia-hold.sh open {slug} {qid} --subject \"...\" --ask \"<the question, at its stakeholder audience>\") "
+            f"and let the stakeholder answer it (gaia-hold.sh answer {slug} {qid} approve|send_back|stop). "
+            f"Gaia's own answers never release it: neither --by gaia (refused by gaia-hold.sh) nor a "
+            f"questions[].answered value written by the loop counts as the stakeholder's word")
+
+def released(qid, rec):
+    """True when a hold named <qid> was opened no earlier than the question was
+    last asked and has been answered by someone other than Gaia."""
+    h = (d.get("holds") or {}).get(qid) or {}
+    if h.get("status") not in ("approved", "send_back", "stopped"): return False
+    by = str(h.get("by") or "").strip().lower()
+    if by in ("", "gaia"): return False
+    if not h.get("answered"): return False
+    if str(h.get("opened") or "") < str(rec.get("asked") or ""): return False
+    return True
+
+def downgrade(qid, new_aud):
+    """The (recorded, refused) pair when moving <qid> to <new_aud> is a
+    stakeholder->technical downgrade without a stakeholder-answered hold."""
+    rec = recs.get(qid)
+    if not rec: return None
+    if rec.get("audience") == "stakeholder" and new_aud == "technical" and not released(qid, rec):
+        return rec
+    return None
+
+if mode == "view":
+    out = json.loads(rest[0])
+    qid = out.get("question_id")
+    if have_state and out.get("status") == "question" and qid and downgrade(qid, out.get("audience")):
+        msg = (f"refused re-tag of question '{qid}' from stakeholder to technical for project '{slug}': "
+               f"it was asked with audience=stakeholder and the stakeholder has not released it — " + release_howto(qid))
+        out.update({"ok": False, "status": "refused", "field": "question_audience", "audience": "stakeholder",
+                    "refused_audience": "technical", "question_text": out.get("message"), "message": msg})
+    print(json.dumps(out))
+
+elif mode == "record":
+    qid, aud, sid, rid, text = rest[0], rest[1], rest[2], rest[3], rest[4]
+    if not have_state: sys.exit(0)
+    rec = downgrade(qid, aud)
+    if rec:
+        msg = (f"refused re-tag of question '{qid}' from stakeholder to technical for project '{slug}': " + release_howto(qid))
+        print(json.dumps({"ok": False, "status": "refused", "field": "question_audience", "question_id": qid,
+                          "audience": "stakeholder", "refused_audience": aud, "message": msg}))
+        sys.exit(3)
+    rec = recs.get(qid)
+    t = now()
+    if not rec:
+        rec = {"id": qid, "first_audience": aud, "first_asked": t}
+        logline(d, f"question {qid}: recorded audience={aud} (session {sid}, run {rid})")
+    elif rec.get("audience") != aud:
+        logline(d, f"question {qid}: audience {rec.get('audience')} -> {aud} (session {sid}, run {rid})"
+                   + (" released by stakeholder-answered hold " + qid if rec.get("audience") == "stakeholder" else ""))
+    rec.update({"audience": aud, "asked": t, "session_id": sid, "run_id": rid, "text": (text or "")[:300]})
+    d.setdefault("question_audience", {})[qid] = rec
+    d["updated"] = t; dump(path, d)
+
+elif mode == "resume":
+    sid = rest[0]
+    if not have_state or not sid: sys.exit(0)
+    mine = [r for r in recs.values() if r.get("session_id") == sid]
+    if not mine: sys.exit(0)
+    rec = max(mine, key=lambda r: str(r.get("asked") or ""))
+    qid = rec.get("id")
+    if rec.get("audience") == "stakeholder" and not released(qid, rec):
+        msg = (f"refused resume of session {sid} for project '{slug}': it is waiting on question '{qid}', "
+               f"asked with audience=stakeholder, and the stakeholder has not released it — the loop does not "
+               f"answer a stakeholder question itself or re-tag it technical; " + release_howto(qid))
+        print(json.dumps({"ok": False, "status": "refused", "field": "question_audience", "question_id": qid,
+                          "audience": "stakeholder", "session_id": sid, "message": msg}))
+        sys.exit(3)
+else:
+    sys.exit("gaia-claude: _audience_state view|record|resume")
+PY
+}
+
+# _audience_resume_guard <slug> <session_id>
+# Refuse `run --resume` of a session whose latest routed question is an
+# unreleased stakeholder question. Reads the structured record only. Returns
+# 0 when there is no resume, no state file, no record for the session, the
+# question is technical, or a stakeholder-answered hold released it. On
+# refusal: one JSON line on stdout, a log line on the project, exit 3 before
+# any run record exists.
+_audience_resume_guard() {
+  local slug="$1" sid="$2" out rc
+  [ -n "$sid" ] || return 0
+  [ -f "$GAIA_STATE_DIR/$slug.yaml" ] || return 0
+  set +e
+  out="$(_audience_state resume "$slug" "$sid")"; rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || return 0
+  [ "$rc" -eq 3 ] || die "audience guard failed (rc=$rc)"
+  local msg
+  msg="$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("message",""))')"
+  "$SCRIPT_DIR/gaia-project.sh" log "$slug" "$msg" >/dev/null || true
+  printf '%s\n' "$out"
+  printf 'gaia: %s\n' "$msg" >&2
+  exit 3
+}
+
 # ---------------------------------------------------------------- run --------
 cmd_run() {
   local project="" label="run" resume="" background=0 max_turns="" model="" prompt=""
@@ -92,6 +250,9 @@ cmd_run() {
   # Structured-field guard: no run id, run dir or meta file exists yet, so a
   # refusal leaves nothing under $GAIA_RUNS_DIR.
   _amend_revision_guard "$slug" "$prompt"
+  # Audience guard: a resume that would answer an unreleased stakeholder
+  # question is refused here, before any run record exists.
+  _audience_resume_guard "$slug" "$resume"
 
   local run_id run_dir result_file err_file meta_file
   run_id="$(date -u +%Y%m%dT%H%M%SZ)-$(slugify "$label")"
@@ -132,7 +293,11 @@ cmd_run() {
 }
 
 # _record_state — pass-through filter: prints the summary JSON unchanged and,
-# when a state file exists for the slug, records session/run/command on it.
+# when a state file exists for the slug, records session/run/command on it,
+# plus the audience of a routed question under question_audience.<id>.
+# A summary already marked status=refused by the audience guard (a
+# stakeholder question re-emitted as technical) is printed, logged on the
+# project, and exits 3: nothing is recorded for that run or question.
 _record_state() {
   local json; json="$(cat)"
   printf '%s\n' "$json"
@@ -145,10 +310,26 @@ _record_state() {
   sid="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("session_id") or "")')"
   rid="$(sed -n 's/^run_id=//p' "$meta")"; label="$(sed -n 's/^label=//p' "$meta")"
   st="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status") or "")')"
+  if [ "$st" = refused ]; then
+    local msg
+    msg="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("message") or "")')"
+    "$SCRIPT_DIR/gaia-project.sh" log "$slug" "run $rid ($label) -> refused: $msg" >/dev/null || true
+    printf 'gaia: %s\n' "$msg" >&2
+    exit 3
+  fi
   [ -n "$sid" ] && "$SCRIPT_DIR/gaia-project.sh" set "$slug" last_session_id "$sid" >/dev/null
   "$SCRIPT_DIR/gaia-project.sh" set "$slug" last_run_id "$rid" >/dev/null
   "$SCRIPT_DIR/gaia-project.sh" set "$slug" last_command "$label" >/dev/null
   "$SCRIPT_DIR/gaia-project.sh" log "$slug" "run $rid ($label) -> $st" >/dev/null
+  if [ "$st" = question ]; then
+    local qid aud text
+    qid="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("question_id") or "")')"
+    aud="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("audience") or "")')"
+    text="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("message") or "")')"
+    if [ -n "$qid" ]; then
+      _audience_state record "$slug" "$qid" "$aud" "$sid" "$rid" "$text"
+    fi
+  fi
 }
 
 # _execute <dir> <result_file> <err_file> <meta_file> <argv...>
@@ -165,8 +346,19 @@ _execute() {
   mv "$result_file.partial" "$result_file"
 }
 
-# _summarize <result_file> — parse Claude JSON + markers into Gaia's contract
+# _summarize <result_file> — parse Claude JSON + markers into Gaia's contract,
+# then pass the summary through the audience guard's read-only view: a
+# question re-emitted as technical while recorded stakeholder comes back
+# status=refused at audience=stakeholder (run, wait and status all agree).
 _summarize() {
+  local result_file="$1" meta_file="${1%.json}.meta" slug raw
+  slug="$(sed -n 's/^slug=//p' "$meta_file" 2>/dev/null || true)"
+  raw="$(_summarize_raw "$result_file")"
+  _audience_state view "$slug" "$raw"
+}
+
+# _summarize_raw <result_file> — the parse itself, audience taken as emitted
+_summarize_raw() {
   local result_file="$1" meta_file="${1%.json}.meta" err_file="${1%.json}.stderr.log"
   need_python
   python3 - "$result_file" "$meta_file" "$err_file" <<'PY'
