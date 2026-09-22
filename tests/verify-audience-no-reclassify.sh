@@ -8,11 +8,12 @@
 # audience="stakeholder"; the loop then tries to answer it itself (a resume of
 # the asking session carrying that override text) and to re-tag it (a later
 # block emitting the same id as technical). Both must exit non-zero, record
-# no answer for the id and say a stakeholder-answered hold is required. A
-# Gaia-written questions[].answered value, and a hold Gaia tries to answer
-# itself, must not release it either. A hold on the id answered by the
-# stakeholder must. A born-technical question needs no hold; a stakeholder
-# question never re-tagged is routed to the stakeholder as today.
+# no answer for the id and say a stakeholder-answered hold is required — and
+# the refusal itself must have opened exactly one hold on the question id
+# (this test opens none). A Gaia-written questions[].answered value, and a
+# hold Gaia tries to answer itself, must not release it either. That hold
+# answered by the stakeholder must. A born-technical question needs no hold;
+# a stakeholder question never re-tagged is routed to the stakeholder as today.
 #
 # Runs fully isolated: throwaway $HERMES_HOME, a fake `claude` that prints
 # whatever GAIA block the test stages, no network.
@@ -191,9 +192,28 @@ run_cmd self-answer-then-reemit -- "/gaia-review-all"
   && pass "self-answer-then-reemit: re-tag still refused after Gaia's ordinary answer" \
   || flunk "self-answer-then-reemit: re-tag slipped after Gaia's ordinary answer (rc=$RC): $OUT"
 
-# ---- 5. a hold Gaia opens is not enough: pending, or answered --by gaia -------
-bash "$S/gaia-hold.sh" open "$SLUG" "$QID" --subject "rc04 remainder scope" --ask "$QTEXT" >/dev/null
+# ---- 5. the refusal opened the hold itself: exactly one, on the question id,
+#         pending for the stakeholder. The test opens nothing. While it is
+#         pending, or answered --by gaia, it is still not enough. ------------
+hold_status() { state_py "((d.get('holds') or {}).get('$1') or {}).get('status')"; }
+[ "$(hold_status "$QID")" = pending ] \
+  && pass "refusal opened hold $QID: status pending, nothing opened by this test" \
+  || flunk "no pending hold $QID after the refusals (holds: $(state_py "d.get('holds')"))"
+[ "$(state_py "len([n for n in (d.get('holds') or {}) if n == '$QID'])")" = 1 ] \
+  && [ "$(state_py "len(((d.get('holds') or {}).get('$QID') or {}).get('history') or [])")" = 0 ] \
+  && pass "exactly one hold on $QID, opened once across the repeated refusals (no history)" \
+  || flunk "hold $QID was opened more than once or is missing: $(state_py "(d.get('holds') or {}).get('$QID')")"
+[ "$(state_py "len([q for q in d.get('questions', []) if q.get('id') == 'hold:$QID'])")" = 1 ] \
+  && [ "$(state_py "[q for q in d.get('questions', []) if q.get('id') == 'hold:$QID'][0].get('audience')")" = stakeholder ] \
+  && pass "the hold reached the channel backend once, at audience=stakeholder (one hold:$QID card)" \
+  || flunk "hold:$QID card missing, duplicated, or not at stakeholder audience"
+[ "$(state_py "((d.get('holds') or {}).get('$QID') or {}).get('ask')")" = "$QTEXT" ] \
+  && pass "the hold carries the question's text as asked" \
+  || flunk "hold ask is not the question text: $(state_py "((d.get('holds') or {}).get('$QID') or {}).get('ask')")"
 refused_resume "pending-hold" sess-rc04 "$OVERRIDE"
+[ "$(state_py "len(((d.get('holds') or {}).get('$QID') or {}).get('history') or [])")" = 0 ] \
+  && pass "pending-hold: the repeated refusal opened nothing new (still one hold $QID)" \
+  || flunk "pending-hold: the repeated refusal re-opened hold $QID"
 set +e; bash "$S/gaia-hold.sh" answer "$SLUG" "$QID" approve --by gaia >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -ne 0 ] && pass "gaia-hold refuses --by gaia (task B), hold stays pending" || flunk "gaia-hold accepted --by gaia"
 refused_resume "gaia-answered-hold" sess-rc04 "$OVERRIDE"
