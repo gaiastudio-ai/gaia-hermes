@@ -34,14 +34,59 @@ json_escape() { python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))
 # non-blank word), or empty.
 _prompt_command() { printf '%s\n' "$1" | awk 'NF { print $1; exit }'; }
 
+# ------------------------------------------------ refusal holds --------------
+# A guard's refusal is a decision that is the stakeholder's, so the refusal
+# opens the hold it stands on, at the seam where it refuses, through the
+# existing gaia-hold.sh (whatever hold backend gaia.yaml configures). One hold
+# per cause: the hold is keyed by its name and, while `holds.<name>` is
+# pending, a repeated refusal opens nothing new — the open hold stands. Fail
+# closed: when the hold cannot be opened the refusal stands anyway (same exit
+# code), and the failure is logged on the project as a hold-open error.
+#
+# _guard_hold <slug> <name> <subject> <ask>
+#   Sets GUARD_HOLD_SEND_TEXT to the card text gaia-hold.sh printed (channel
+#   backend; empty otherwise or when nothing new was opened). Returns 0 when a
+#   hold named <name> is pending afterwards (already open, or opened now);
+#   returns 1 after logging the hold-open error. Never launches anything.
+GUARD_HOLD_SEND_TEXT=""
+_guard_hold() {
+  local slug="$1" name="$2" subject="$3" ask="$4" status out err rc
+  GUARD_HOLD_SEND_TEXT=""
+  # Read-only look at the recorded hold (gaia-hold.sh check would poll the
+  # command backend, which is a side effect a refusal must not have).
+  status="$("$SCRIPT_DIR/gaia-project.sh" get "$slug" holds 2>/dev/null \
+    | python3 -c 'import json,sys; print(((json.load(sys.stdin) or {}).get(sys.argv[1]) or {}).get("status") or "none")' "$name" 2>/dev/null)" || status="none"
+  [ "$status" != pending ] || return 0
+  err="$(mktemp)"
+  set +e
+  out="$("$SCRIPT_DIR/gaia-hold.sh" open "$slug" "$name" --subject "$subject" --ask "$ask" 2>"$err")"
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    rm -f "$err"
+    GUARD_HOLD_SEND_TEXT="$(printf '%s' "$out" | python3 -c 'import json,sys
+try: print(json.loads(sys.stdin.read()).get("send_text") or "")
+except Exception: print("")' 2>/dev/null || true)"
+    return 0
+  fi
+  local why; why="$(tr '\n' ' ' <"$err" | cut -c1-300)"; rm -f "$err"
+  "$SCRIPT_DIR/gaia-project.sh" log "$slug" "hold-open error: hold $name could not be opened for the stakeholder (gaia-hold.sh open rc=$rc): ${why:-no output}" >/dev/null 2>&1 || true
+  return 1
+}
+
+# _json_or_null <text> — JSON string of <text>, or null when empty
+_json_or_null() { if [ -n "$1" ]; then printf '%s' "$1" | json_escape; else printf 'null'; fi; }
+
 # _amend_revision_guard <slug> <prompt>
 # Refuse to launch a new-revision command while the project's STRUCTURED
 # amend_revision field (gaia-project.sh set <slug> amend_revision <N>) is set.
 # Reads the field only — never directive prose. Returns 0 (launch normally)
 # when the prompt is not a new-revision command, the project has no state
-# file, or amend_revision is null/absent. On refusal: prints one JSON line on
-# stdout, logs the refusal on the project, and exits non-zero before any run
-# record exists.
+# file, or amend_revision is null/absent. On refusal: opens the hold
+# `amend-revision-<N>` for the stakeholder (options: amend revision N in
+# place, draft a new revision, or change the directive), prints one JSON line
+# on stdout, logs the refusal on the project, and exits non-zero before any
+# run record exists — whether or not the hold could be opened.
 _amend_revision_guard() {
   local slug="$1" prompt="$2" cmd c hit=0 amend
   cmd="$(_prompt_command "$prompt")"
@@ -50,12 +95,21 @@ _amend_revision_guard() {
   [ -f "$GAIA_STATE_DIR/$slug.yaml" ] || return 0
   amend="$("$SCRIPT_DIR/gaia-project.sh" get "$slug" amend_revision)"
   case "$amend" in ""|null) return 0 ;; esac
-  local msg amend_json
+  local msg amend_json hold hold_json
   msg="refused $cmd for project '$slug': amend_revision=$amend is set — amend architecture revision $amend (/gaia-edit-arch) instead of writing a new one, or clear the field with: gaia-project.sh set $slug amend_revision null"
   case "$amend" in *[!0-9]*) amend_json="$(printf '%s' "$amend" | json_escape)" ;; *) amend_json="$amend" ;; esac
+  hold="amend-revision-$amend"
+  if _guard_hold "$slug" "$hold" "amend_revision=$amend blocks $cmd on project $slug" \
+       "Gaia refused $cmd for project '$slug': amend_revision=$amend is set. Options: (1) amend revision $amend in place (/gaia-edit-arch) — recommended; (2) draft a new revision (clear the field first: gaia-project.sh set $slug amend_revision null); (3) change the directive."; then
+    msg="$msg — hold $hold is open for the stakeholder"
+    hold_json="$(printf '%s' "$hold" | json_escape)"
+  else
+    msg="$msg — hold $hold could not be opened for the stakeholder (hold-open error logged on the project)"
+    hold_json=null
+  fi
   "$SCRIPT_DIR/gaia-project.sh" log "$slug" "$msg" >/dev/null || true
-  printf '{"ok":false,"status":"refused","field":"amend_revision","amend_revision":%s,"command":%s,"message":%s}\n' \
-    "$amend_json" "$(printf '%s' "$cmd" | json_escape)" "$(printf '%s' "$msg" | json_escape)"
+  printf '{"ok":false,"status":"refused","field":"amend_revision","amend_revision":%s,"command":%s,"hold":%s,"hold_send_text":%s,"message":%s}\n' \
+    "$amend_json" "$(printf '%s' "$cmd" | json_escape)" "$hold_json" "$(_json_or_null "$GUARD_HOLD_SEND_TEXT")" "$(printf '%s' "$msg" | json_escape)"
   printf 'gaia: %s\n' "$msg" >&2
   exit 3
 }
@@ -73,10 +127,14 @@ _amend_revision_guard() {
 # asked and answered by the stakeholder (gaia-hold.sh: status approved,
 # send_back or stopped with `by` not gaia — task B's rule). Only that hold
 # releases it: `questions[].answered` is written by Gaia and carries no
-# provenance, so it is never consulted. A question emitted technical from
-# the start is not guarded (the model's first tagging is its own; what is the
-# stakeholder's by nature is V3's taxonomy, not this guard's), and a
-# technical question later re-emitted as stakeholder is simply upgraded.
+# provenance, so it is never consulted. The refusal itself opens that hold
+# (name = the question id, ask = the question's recorded text, for the
+# stakeholder) through gaia-hold.sh at the seam where it exits 3 — see
+# _guard_hold; while it is pending a repeated refusal opens nothing new. A
+# question emitted technical from the start is not guarded (the model's first
+# tagging is its own; what is the stakeholder's by nature is V3's taxonomy,
+# not this guard's), and a technical question later re-emitted as stakeholder
+# is simply upgraded.
 #
 # _audience_state <mode> <slug> [args...]   (python; state file may be absent)
 #   view   <slug> <summary-json>       stdout: the summary JSON, rewritten to
@@ -86,6 +144,13 @@ _amend_revision_guard() {
 #   resume <slug> <sid>                exit 3 + refusal JSON when the session's
 #                                      latest recorded question is an unreleased
 #                                      stakeholder question; silent exit 0 otherwise
+#   refresh <slug> <refusal-json> <send_text>   stdout: the refusal JSON with its
+#                                      message re-read against the holds now on
+#                                      file (the open-a-hold clause becomes
+#                                      "hold <id> is open for the stakeholder"
+#                                      once that hold is pending), plus `hold`
+#                                      (the pending hold's name, else null) and
+#                                      `hold_send_text` (the card, channel backend)
 _audience_state() {
   need_python
   python3 - "$GAIA_STATE_DIR" "$@" <<'PY'
@@ -117,9 +182,17 @@ d = load(path) if have_state else {}
 recs = d.get("question_audience") or {}
 
 REQUIRE = "a stakeholder-answered hold is required"
+def open_clause(qid):
+    """The instruction to open the hold by hand: what the message says only
+    while no hold named <qid> is pending (the refusal opens one itself)."""
+    return (f"open one named after the question id "
+            f"(gaia-hold.sh open {slug} {qid} --subject \"...\" --ask \"<the question, at its stakeholder audience>\")")
+def hold_pending(qid):
+    return ((d.get("holds") or {}).get(qid) or {}).get("status") == "pending"
+def hold_note(qid):
+    return f"hold {qid} is open for the stakeholder" if hold_pending(qid) else open_clause(qid)
 def release_howto(qid):
-    return (f"{REQUIRE}: open one named after the question id "
-            f"(gaia-hold.sh open {slug} {qid} --subject \"...\" --ask \"<the question, at its stakeholder audience>\") "
+    return (f"{REQUIRE}: {hold_note(qid)} "
             f"and let the stakeholder answer it (gaia-hold.sh answer {slug} {qid} approve|send_back|stop). "
             f"Gaia's own answers never release it: neither --by gaia (refused by gaia-hold.sh) nor a "
             f"questions[].answered value written by the loop counts as the stakeholder's word")
@@ -151,7 +224,8 @@ if mode == "view":
         msg = (f"refused re-tag of question '{qid}' from stakeholder to technical for project '{slug}': "
                f"it was asked with audience=stakeholder and the stakeholder has not released it — " + release_howto(qid))
         out.update({"ok": False, "status": "refused", "field": "question_audience", "audience": "stakeholder",
-                    "refused_audience": "technical", "question_text": out.get("message"), "message": msg})
+                    "refused_audience": "technical", "question_text": out.get("message"),
+                    "asked_text": (recs.get(qid) or {}).get("text") or "", "message": msg})
     print(json.dumps(out))
 
 elif mode == "record":
@@ -161,7 +235,8 @@ elif mode == "record":
     if rec:
         msg = (f"refused re-tag of question '{qid}' from stakeholder to technical for project '{slug}': " + release_howto(qid))
         print(json.dumps({"ok": False, "status": "refused", "field": "question_audience", "question_id": qid,
-                          "audience": "stakeholder", "refused_audience": aud, "message": msg}))
+                          "audience": "stakeholder", "refused_audience": aud, "question_text": text,
+                          "asked_text": rec.get("text") or "", "message": msg}))
         sys.exit(3)
     rec = recs.get(qid)
     t = now()
@@ -187,11 +262,45 @@ elif mode == "resume":
                f"asked with audience=stakeholder, and the stakeholder has not released it — the loop does not "
                f"answer a stakeholder question itself or re-tag it technical; " + release_howto(qid))
         print(json.dumps({"ok": False, "status": "refused", "field": "question_audience", "question_id": qid,
-                          "audience": "stakeholder", "session_id": sid, "message": msg}))
+                          "audience": "stakeholder", "session_id": sid, "asked_text": rec.get("text") or "",
+                          "message": msg}))
         sys.exit(3)
+
+elif mode == "refresh":
+    out = json.loads(rest[0]); send_text = rest[1] if len(rest) > 1 else ""
+    qid = out.get("question_id")
+    if qid and out.get("field") == "question_audience":
+        # Same clause, same author: an exact swap of the open-by-hand
+        # instruction for the note that the hold is now open (no-op when the
+        # message already carries the note, or when no hold is pending).
+        out["message"] = (out.get("message") or "").replace(open_clause(qid), hold_note(qid))
+        out["hold"] = qid if hold_pending(qid) else None
+        out["hold_send_text"] = send_text or None
+    print(json.dumps(out))
 else:
-    sys.exit("gaia-claude: _audience_state view|record|resume")
+    sys.exit("gaia-claude: _audience_state view|record|resume|refresh")
 PY
+}
+
+# _audience_refusal_hold <slug> <refusal-json>
+# The audience guard's seam: open the hold named after the refused question
+# (ask = the question's text as recorded when the stakeholder was asked it,
+# `asked_text`) through _guard_hold, then re-read the refusal against the
+# holds on file. Sets AUDIENCE_REFUSAL_JSON to the refreshed refusal JSON.
+# Never returns non-zero: a hold that could not be opened is logged on the
+# project as a hold-open error and the caller refuses exactly as before.
+AUDIENCE_REFUSAL_JSON=""
+_audience_refusal_hold() {
+  local slug="$1" json="$2" qid qtext
+  AUDIENCE_REFUSAL_JSON="$json"
+  qid="$(printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("question_id") or "" if d.get("field") == "question_audience" else "")')"
+  [ -n "$qid" ] || return 0
+  qtext="$(printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("asked_text") or d.get("question_text") or "")')"
+  [ -n "$qtext" ] || qtext="Question '$qid' was asked with audience=stakeholder (its text was not recorded); it is yours to answer."
+  if ! _guard_hold "$slug" "$qid" "stakeholder question $qid" "$qtext"; then
+    : # fail closed: the caller refuses regardless; the hold-open error is on the project log
+  fi
+  AUDIENCE_REFUSAL_JSON="$(_audience_state refresh "$slug" "$json" "$GUARD_HOLD_SEND_TEXT")"
 }
 
 # _audience_resume_guard <slug> <session_id>
@@ -199,8 +308,9 @@ PY
 # unreleased stakeholder question. Reads the structured record only. Returns
 # 0 when there is no resume, no state file, no record for the session, the
 # question is technical, or a stakeholder-answered hold released it. On
-# refusal: one JSON line on stdout, a log line on the project, exit 3 before
-# any run record exists.
+# refusal: the hold named after the question is opened for the stakeholder
+# (nothing new if it is already pending), then one JSON line on stdout, a log
+# line on the project, exit 3 before any run record exists.
 _audience_resume_guard() {
   local slug="$1" sid="$2" out rc
   [ -n "$sid" ] || return 0
@@ -210,6 +320,7 @@ _audience_resume_guard() {
   set -e
   [ "$rc" -ne 0 ] || return 0
   [ "$rc" -eq 3 ] || die "audience guard failed (rc=$rc)"
+  _audience_refusal_hold "$slug" "$out"; out="$AUDIENCE_REFUSAL_JSON"
   local msg
   msg="$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("message",""))')"
   "$SCRIPT_DIR/gaia-project.sh" log "$slug" "$msg" >/dev/null || true
@@ -296,27 +407,32 @@ cmd_run() {
 # when a state file exists for the slug, records session/run/command on it,
 # plus the audience of a routed question under question_audience.<id>.
 # A summary already marked status=refused by the audience guard (a
-# stakeholder question re-emitted as technical) is printed, logged on the
-# project, and exits 3: nothing is recorded for that run or question.
+# stakeholder question re-emitted as technical) opens the hold named after
+# the question for the stakeholder (nothing new if it is already pending),
+# then is printed, logged on the project, and exits 3: nothing is recorded
+# for that run or question, whether or not the hold could be opened.
 _record_state() {
   local json; json="$(cat)"
-  printf '%s\n' "$json"
-  local slug meta; meta="$(printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("result_file",""))')"
+  local slug="" meta; meta="$(printf '%s' "$json" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("result_file",""))')"
   meta="${meta%.json}.meta"
-  [ -f "$meta" ] || return 0
-  slug="$(sed -n 's/^slug=//p' "$meta")"
-  [ -f "$GAIA_STATE_DIR/$slug.yaml" ] || return 0
+  [ -f "$meta" ] && slug="$(sed -n 's/^slug=//p' "$meta")"
+  if [ -z "$slug" ] || [ ! -f "$GAIA_STATE_DIR/$slug.yaml" ]; then
+    printf '%s\n' "$json"; return 0
+  fi
   local sid rid st label
   sid="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("session_id") or "")')"
   rid="$(sed -n 's/^run_id=//p' "$meta")"; label="$(sed -n 's/^label=//p' "$meta")"
   st="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status") or "")')"
   if [ "$st" = refused ]; then
     local msg
+    _audience_refusal_hold "$slug" "$json"; json="$AUDIENCE_REFUSAL_JSON"
+    printf '%s\n' "$json"
     msg="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("message") or "")')"
     "$SCRIPT_DIR/gaia-project.sh" log "$slug" "run $rid ($label) -> refused: $msg" >/dev/null || true
     printf 'gaia: %s\n' "$msg" >&2
     exit 3
   fi
+  printf '%s\n' "$json"
   [ -n "$sid" ] && "$SCRIPT_DIR/gaia-project.sh" set "$slug" last_session_id "$sid" >/dev/null
   "$SCRIPT_DIR/gaia-project.sh" set "$slug" last_run_id "$rid" >/dev/null
   "$SCRIPT_DIR/gaia-project.sh" set "$slug" last_command "$label" >/dev/null
