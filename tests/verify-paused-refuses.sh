@@ -1,4 +1,73 @@
 #!/usr/bin/env bash
+# verify-paused-refuses.sh — proof that gaia-claude.sh itself refuses to start
+# or continue a run on a paused project, so the `paused` flag is a gate no
+# caller can step around.
+#
+# ATTEMPTS THE VIOLATION: starting a run on a paused project by every path a
+# run can start — foreground, background, and resume after a hold the
+# stakeholder answered — and through every alias of the record: the project
+# given as a path, a symlink to the record, a relative path, a `../` walk, and
+# records that resolve outside the registry directory. Each must be refused
+# before any backend call, with exit 3, stderr exactly
+# `refused: project <slug> is paused`, exactly one new project-log entry whose
+# text is that string and NOTHING else changed in the record (not `updated`),
+# nothing on stdout, no run record, no hold opened. A record that cannot be
+# parsed, whose `paused` is not a boolean, or that resolves outside the
+# registry is refused the same way with stderr exactly
+# `refused: project record <file> is unreadable` and one new line in the
+# registry-wide log — never read as "not paused".
+#
+# An unpaused project must behave exactly as on `main`: five scenarios
+# (foreground start, background start, resume after an answered hold, a
+# command with no directive set, a born-technical question) are run against
+# main's copy of the script and against this branch's, in the same fixture
+# with the clock frozen, and the exit code, the combined stdout+stderr, the
+# whole $HERMES_HOME tree (run record and project record) and the stub's
+# recorded invocations are compared as raw bytes. Nothing is stripped or
+# normalised. As its last step it runs the existing suites unfrozen.
+#
+# MAIN'S COPY OF THE SCRIPT IS EMBEDDED BELOW, VERBATIM, and pinned by the
+# sha256 of profile/skills/gaia-orchestrator/scripts/gaia-claude.sh at
+# origin/main bec65e4d3005f8bf513ae6436b9005094a60bfae, the HEAD this task
+# started from. The proof therefore needs no git ref (a checkout, a git
+# archive or a merged tree all run it as-is) and can never compare the
+# branch with itself: the embedded copy is checked against the pinned hash
+# and must lack the gate, and the branch's copy must carry it.
+#
+# Runs fully isolated: throwaway $HERMES_HOME, a fake `claude` that prints
+# whatever GAIA block the test stages and records its argv, hold backend
+# `command` stubbed to record what it is asked to file. No model runs;
+# nothing reaches a live channel.
+#
+#   bash tests/verify-paused-refuses.sh      # exit 0 == correct
+set -eu
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SKILL_REL="profile/skills/gaia-orchestrator"
+SKILL="$REPO_DIR/$SKILL_REL"
+S="$SKILL/scripts"
+for tool in python3 cmp diff find; do
+  command -v "$tool" >/dev/null 2>&1 || { echo "FAIL: $tool is required" >&2; exit 1; }
+done
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+fail=0
+pass() { printf 'PASS  %s\n' "$*"; }
+flunk() { printf 'FAIL  %s\n' "$*"; fail=1; }
+
+# ---- main's copy of the script, in a tree with the same siblings ------------
+# The siblings (lib.sh, gaia-project.sh, gaia-hold.sh, references/) are not
+# changed by this task, so main's skill tree is this tree with main's
+# gaia-claude.sh in it.
+MAIN_HEAD="bec65e4d3005f8bf513ae6436b9005094a60bfae"
+MAIN_SHA256="f38f83b7f8a488a42d0daec3a10ed41c2c6b54d38c6bbf89ce68942c5ff2cd6e"
+mkdir -p "$TMP/main-skill"
+cp -R "$SKILL/." "$TMP/main-skill/"
+MAIN_S="$TMP/main-skill/scripts"
+cat >"$MAIN_S/gaia-claude.sh" <<'MAIN_GAIA_CLAUDE_SH_BEC65E4D'
+#!/usr/bin/env bash
 # gaia-claude.sh — run headless Claude Code (`claude -p`) on the Claude host
 # for a GAIA project, and turn the result into Gaia's JSON contract.
 #
@@ -329,104 +398,6 @@ _audience_resume_guard() {
   exit 3
 }
 
-# ---------------------------------------------------- paused gate ------------
-# A paused project cannot start or continue a run. The flag is a gate in the
-# runner itself, so no caller (the loop, a resume after an answer, a gateway
-# message, the scheduler, a direct call) can step around it. It runs on every
-# path through `run` — foreground, background and resume — before
-# load_settings (which may reach the Claude host over ssh), before any guard
-# that could open a hold, and before any run record or state write exists.
-#
-# Resolution is by slug through the registry, never by a path a caller hands
-# in: the record is $GAIA_STATE_DIR/<slug>.yaml, resolved with realpath, and a
-# record that resolves outside the registry directory (a symlink out, a `../`
-# walk, any alias) is refused unread. Malformed state fails closed: a record
-# that cannot be read or parsed, or whose `paused` is not a boolean, is a
-# refusal, never "not paused".
-#
-# _paused_guard <slug>
-#   Returns 0 when the resolved record reads paused=false. Otherwise exits 3
-#   (the refusal code the other guards use) after writing exactly one line to
-#   stderr and exactly one line to a log, and nothing else anywhere:
-#     refused: project <slug> is paused           — appended to the project's
-#                                                    log as its one new entry;
-#                                                    nothing else in the record
-#                                                    changes (not `updated`)
-#     refused: project record <file> is unreadable — appended to the registry-
-#                                                    wide log (no project to
-#                                                    log on)
-#   <slug> is the resolved record's registry key; <file> is the requested
-#   record's filename.
-GAIA_REGISTRY_LOG="$GAIA_STATE_DIR/registry.log"
-_paused_guard() {
-  local slug="$1" out rc msg
-  need_python
-  set +e
-  out="$(python3 - "$GAIA_STATE_DIR" "$slug" "$GAIA_REGISTRY_LOG" <<'PY'
-import sys, os, json, datetime
-state_dir, slug, registry_log = sys.argv[1], sys.argv[2], sys.argv[3]
-requested = os.path.join(state_dir, slug + ".yaml")
-try:
-    import yaml
-    def load(p):
-        with open(p) as f: return yaml.safe_load(f)
-    def dump(p, d):
-        tmp = p + ".tmp"
-        with open(tmp, "w") as f: yaml.safe_dump(d, f, sort_keys=False, allow_unicode=True)
-        os.replace(tmp, p)
-except ImportError:
-    def load(p):
-        with open(p) as f: return json.load(f)
-    def dump(p, d):
-        tmp = p + ".tmp"
-        with open(tmp, "w") as f: json.dump(d, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, p)
-def now(): return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-def unreadable():
-    name = os.path.basename(requested)
-    try:
-        with open(registry_log, "a") as f:
-            f.write(f"{now()}  refused: project record {name} is unreadable\n")
-    except OSError:
-        pass  # the refusal stands whether or not it could be logged
-    print(name); sys.exit(4)
-
-registry = os.path.realpath(state_dir)
-record = os.path.realpath(requested)
-# Inside the registry directory means: directly in it, as a .yaml record.
-if os.path.dirname(record) != registry or not record.endswith(".yaml"):
-    unreadable()
-try:
-    d = load(record)
-except Exception:
-    unreadable()
-if not isinstance(d, dict) or type(d.get("paused")) is not bool:
-    unreadable()
-if d["paused"]:
-    key = os.path.basename(record)[:-len(".yaml")]
-    # The one new log line, and nothing else: `updated` is not touched.
-    try:
-        d.setdefault("log", []).append({"t": now(), "msg": f"refused: project {key} is paused"})
-        dump(record, d)
-    except Exception:
-        pass  # the refusal stands whether or not it could be logged
-    print(key); sys.exit(3)
-sys.exit(0)
-PY
-)"
-  rc=$?
-  set -e
-  case "$rc" in
-    0) return 0 ;;
-    3) msg="refused: project $out is paused" ;;
-    4) msg="refused: project record $out is unreadable" ;;
-    *) die "paused guard failed (rc=$rc)" ;;
-  esac
-  printf '%s\n' "$msg" >&2
-  exit 3
-}
-
 # ---------------------------------------------------------------- run --------
 cmd_run() {
   local project="" label="run" resume="" background=0 max_turns="" model="" prompt=""
@@ -445,22 +416,13 @@ cmd_run() {
   done
   [ -n "$project" ] || die "--project is required"
   [ -n "$prompt" ] || die "prompt is required after --"
+  load_settings
+  [ -f "$GAIA_SYSTEM_PROMPT_FILE" ] || die "missing $GAIA_SYSTEM_PROMPT_FILE"
 
   local slug dir
   case "$project" in
-    /*|~*) slug="$(basename "$project")" ;;
-    *) slug="$project" ;;
-  esac
-  # Paused gate: a paused (or unreadable) project record refuses here, before
-  # settings are loaded, before any backend is reached, any guard opens a
-  # hold, or any run record or state write exists.
-  _paused_guard "$slug"
-
-  load_settings
-  [ -f "$GAIA_SYSTEM_PROMPT_FILE" ] || die "missing $GAIA_SYSTEM_PROMPT_FILE"
-  case "$project" in
-    /*|~*) dir="$project" ;;
-    *) dir="$(project_path "$project")" ;;
+    /*|~*) dir="$project"; slug="$(basename "$project")" ;;
+    *) slug="$project"; dir="$(project_path "$project")" ;;
   esac
   [ -n "$max_turns" ] || max_turns="$CLAUDE_MAX_TURNS"
   [ -n "$model" ] || model="$CLAUDE_MODEL"
@@ -725,3 +687,469 @@ case "$sub" in
   tail) cmd_tail "$@" ;;
   *) usage ;;
 esac
+MAIN_GAIA_CLAUDE_SH_BEC65E4D
+chmod +x "$MAIN_S/gaia-claude.sh"
+have_sha="$(python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$MAIN_S/gaia-claude.sh")"
+if [ "$have_sha" != "$MAIN_SHA256" ]; then
+  echo "FAIL: the embedded copy of main's gaia-claude.sh does not hash to $MAIN_SHA256 (got $have_sha)" >&2
+  exit 1
+fi
+pass "main's copy: embedded gaia-claude.sh hashes to $MAIN_SHA256 (origin/main $MAIN_HEAD)"
+if grep -q '_paused_guard' "$MAIN_S/gaia-claude.sh"; then
+  echo "FAIL: main's copy carries the paused gate; the comparison would be against itself" >&2
+  exit 1
+fi
+if ! grep -q '_paused_guard' "$S/gaia-claude.sh"; then
+  echo "FAIL: $S/gaia-claude.sh carries no paused gate; there is nothing to compare" >&2
+  exit 1
+fi
+if cmp -s "$MAIN_S/gaia-claude.sh" "$S/gaia-claude.sh"; then
+  echo "FAIL: the branch's gaia-claude.sh is byte-identical to main's; this is a self-comparison" >&2
+  exit 1
+fi
+pass "main's copy lacks the paused gate and the branch's copy carries it: the comparison is not against itself"
+
+# ---- fixture ------------------------------------------------------------------
+export HERMES_HOME="$TMP/hermes"
+export GAIA_SETTINGS="$HERMES_HOME/gaia.yaml"
+export GAIA_STATE_DIR="$HERMES_HOME/projects"
+export GAIA_RUNS_DIR="$HERMES_HOME/gaia-runs"
+mkdir -p "$HERMES_HOME" "$GAIA_STATE_DIR" "$GAIA_RUNS_DIR" "$TMP/bin" "$TMP/projects"
+
+# Fake claude: prints one Claude-shaped JSON whose `result` is the staged block.
+# Records its full argv (claude.argv) and one line per invocation (claude.calls).
+cat >"$TMP/bin/claude" <<EOF
+#!/usr/bin/env bash
+printf 'call\n' >>"$TMP/claude.calls"
+printf '%s\n' "\$*" >>"$TMP/claude.argv"
+python3 - "$TMP/stage.result" "$TMP/stage.session" <<'PY'
+import json, sys
+print(json.dumps({"session_id": open(sys.argv[2]).read().strip(), "is_error": False, "num_turns": 1,
+                  "total_cost_usd": 0, "result": open(sys.argv[1]).read()}))
+PY
+EOF
+chmod +x "$TMP/bin/claude"
+: >"$TMP/claude.argv"; : >"$TMP/claude.calls"
+
+# Stubbed hold backend (hold_backend: command): records what it is asked to file.
+cat >"$TMP/hold-file.sh" <<EOF
+#!/usr/bin/env bash
+printf '%s\t%s\t%s\n' "\$HOLD_NAME" "\$HOLD_SUBJECT" "\$HOLD_ASK" >>"$TMP/holds.filed"
+n=\$(wc -l <"$TMP/holds.filed" | tr -d ' ')
+printf '{"id": "stub-%s"}\n' "\$n"
+EOF
+cat >"$TMP/hold-status.sh" <<'EOF'
+#!/usr/bin/env bash
+echo pending
+EOF
+chmod +x "$TMP/hold-file.sh" "$TMP/hold-status.sh"
+: >"$TMP/holds.filed"
+
+cat >"$GAIA_SETTINGS" <<EOF
+claude:
+  mode: local
+  bin: $TMP/bin/claude
+  model: ""
+  max_turns: 5
+  max_budget_usd: 0
+projects_root: $TMP/projects
+hold_backend: command
+hold_commands:
+  file: "$TMP/hold-file.sh"
+  status: "$TMP/hold-status.sh"
+EOF
+
+# ---- frozen clock -------------------------------------------------------------
+# Every `date` the shell scripts call and every datetime.now() the python parts
+# call answers 2026-09-23T00:00:00Z, so run ids, timestamps and durations are
+# reproducible between main's copy and this branch's.
+FROZEN_EPOCH=1790121600
+FROZEN_STAMP="20260923T000000Z"
+FROZEN_ISO="2026-09-23T00:00:00Z"
+ORIG_PATH="$PATH"
+ORIG_PYTHONPATH="${PYTHONPATH-}"
+ORIG_PYTHONPATH_SET="${PYTHONPATH+set}"
+mkdir -p "$TMP/frozen/bin" "$TMP/frozen/py"
+cat >"$TMP/frozen/bin/date" <<EOF
+#!/usr/bin/env bash
+# frozen clock for the fixture: every date the scripts ask for is $FROZEN_ISO
+fmt=""
+for a in "\$@"; do
+  case "\$a" in
+    -u) ;;
+    +%s) printf '%s\n' "$FROZEN_EPOCH"; exit 0 ;;
+    +*) fmt="\${a#+}" ;;
+    *) printf 'frozen date: unsupported argument %s\n' "\$a" >&2; exit 1 ;;
+  esac
+done
+python3 -c 'import sys, datetime; print(datetime.datetime.fromtimestamp(int(sys.argv[1]), datetime.timezone.utc).strftime(sys.argv[2]))' "$FROZEN_EPOCH" "\${fmt:-%c}"
+EOF
+chmod +x "$TMP/frozen/bin/date"
+cat >"$TMP/frozen/py/sitecustomize.py" <<EOF
+# frozen clock for the fixture: datetime.datetime.now() is always $FROZEN_ISO
+import datetime as _dt
+_FROZEN = $FROZEN_EPOCH
+_real = _dt.datetime
+class _FrozenDatetime(_real):
+    @classmethod
+    def now(cls, tz=None):
+        if tz is None:
+            return _real.fromtimestamp(_FROZEN, _dt.timezone.utc).replace(tzinfo=None)
+        return _real.fromtimestamp(_FROZEN, tz)
+_dt.datetime = _FrozenDatetime
+EOF
+export PATH="$TMP/frozen/bin:$PATH"
+export PYTHONPATH="$TMP/frozen/py"
+if [ "$(date -u +%Y%m%dT%H%M%SZ)" != "$FROZEN_STAMP" ] || [ "$(date +%s)" != "$FROZEN_EPOCH" ]; then
+  echo "FAIL: fixture: shell clock not frozen: $(date -u +%Y%m%dT%H%M%SZ) $(date +%s)" >&2; exit 1
+fi
+if [ "$(python3 -c 'import datetime; print(datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))')" != "$FROZEN_ISO" ]; then
+  echo "FAIL: fixture: python clock not frozen" >&2; exit 1
+fi
+pass "fixture: shell and python clocks frozen at $FROZEN_ISO"
+
+# ---- helpers ------------------------------------------------------------------
+launches() { wc -l <"$TMP/claude.calls" | tr -d ' '; }
+filed() { wc -l <"$TMP/holds.filed" | tr -d ' '; }
+run_files() { find "$GAIA_RUNS_DIR" -type f | sort; }
+registry_log_lines() { if [ -f "$GAIA_STATE_DIR/registry.log" ]; then wc -l <"$GAIA_STATE_DIR/registry.log" | tr -d ' '; else echo 0; fi; }
+# stage <session_id> <audience> <id> <text> — what the next fake claude run emits
+stage() {
+  printf '%s' "$1" >"$TMP/stage.session"
+  printf '<<GAIA-QUESTION audience="%s" id="%s">>\n%s\n<<END-GAIA-QUESTION>>' "$2" "$3" "$4" >"$TMP/stage.result"
+}
+stage_done() { printf '%s' "$1" >"$TMP/stage.session"; printf '<<GAIA-DONE>>done<<END-GAIA-DONE>>' >"$TMP/stage.result"; }
+# state_py <record file> <python expr over d>
+state_py() {
+  python3 - "$1" "$2" <<'PY'
+import sys, json
+try:
+    import yaml
+    d = yaml.safe_load(open(sys.argv[1])) or {}
+except ImportError:
+    d = json.load(open(sys.argv[1]))
+v = eval(sys.argv[2], {"d": d})
+print("" if v is None else v)
+PY
+}
+# json_field <field> — from the LAST JSON line of $OUT
+json_field() {
+  printf '%s\n' "$OUT" | python3 -c '
+import sys, json
+val = None
+for line in sys.stdin:
+    line = line.strip()
+    if line.startswith("{"):
+        try: val = json.loads(line).get(sys.argv[1])
+        except json.JSONDecodeError: pass
+print("" if val is None else val)' "$1"
+}
+# snapshot <name> / restore <name> — the whole $HERMES_HOME plus the stub logs
+snapshot() { rm -rf "$TMP/snap/$1"; mkdir -p "$TMP/snap/$1"; cp -a "$HERMES_HOME" "$TMP/snap/$1/hermes"; }
+restore() {
+  rm -rf "$HERMES_HOME"; cp -a "$TMP/snap/$1/hermes" "$HERMES_HOME"
+  : >"$TMP/claude.argv"; : >"$TMP/claude.calls"; : >"$TMP/holds.filed"
+}
+# run_split <scripts dir> <args...> -> RC, $TMP/cur.out, $TMP/cur.err (the command under test)
+run_split() {
+  local sdir="$1"; shift
+  set +e
+  bash "$sdir/gaia-claude.sh" run "$@" >"$TMP/cur.out" 2>"$TMP/cur.err"
+  RC=$?
+  set -e
+}
+# run_both <scripts dir> <args...> -> RC, $TMP/cur.both (combined stdout+stderr)
+run_both() {
+  local sdir="$1"; shift
+  set +e
+  bash "$sdir/gaia-claude.sh" run "$@" >"$TMP/cur.both" 2>&1
+  RC=$?
+  set -e
+}
+# wait_for_file <file> — a background run's record; fails the test after 30s
+wait_for_file() {
+  local n=0
+  while [ ! -f "$1" ]; do
+    sleep 0.2; n=$((n + 1))
+    if [ "$n" -ge 150 ]; then echo "FAIL: background run never wrote $1" >&2; exit 1; fi
+  done
+}
+# record_gained_one_line <before> <after> <msg>
+# True when <after> is <before> with exactly one entry appended to `log`,
+# {"t": $FROZEN_ISO, "msg": <msg>}, and NOTHING else different: every other
+# key, `updated` included, compares equal.
+record_gained_one_line() {
+  python3 - "$1" "$2" "$3" "$FROZEN_ISO" <<'PY'
+import sys, json
+try:
+    import yaml
+    load = lambda p: yaml.safe_load(open(p)) or {}
+except ImportError:
+    load = lambda p: json.load(open(p))
+a, b = load(sys.argv[1]), load(sys.argv[2])
+msg, t = sys.argv[3], sys.argv[4]
+a_log, b_log = list(a.get("log") or []), list(b.get("log") or [])
+ok = b_log == a_log + [{"t": t, "msg": msg}]
+a["log"] = a_log; b["log"] = a_log
+print(ok and a == b)
+PY
+}
+
+SLUG="pauseproof"
+RECORD="$GAIA_STATE_DIR/$SLUG.yaml"
+PAUSED_MSG="refused: project $SLUG is paused"
+
+# ---- setup: an unpaused project with an answered hold on a stakeholder question
+mkdir -p "$TMP/projects/$SLUG"
+bash "$S/gaia-project.sh" init "$SLUG" --name "Paused proof" --path "$TMP/projects/$SLUG" >/dev/null
+stage sess-q stakeholder vendor "Which vendor do we pay for?"
+run_both "$S" --project "$SLUG" --label ask -- "/gaia-create-prd"
+OUT="$(cat "$TMP/cur.both")"
+[ "$RC" -eq 0 ] && [ "$(json_field status)" = question ] && [ "$(json_field audience)" = stakeholder ] \
+  && pass "setup: stakeholder question 'vendor' asked in session sess-q (rc=0)" || flunk "setup: rc=$RC: $OUT"
+bash "$S/gaia-hold.sh" open "$SLUG" vendor --subject "vendor" --ask "Which vendor do we pay for?" >/dev/null
+bash "$S/gaia-hold.sh" answer "$SLUG" vendor approve --by Julien >/dev/null
+[ "$(state_py "$RECORD" "d['holds']['vendor']['status']")" = approved ] && [ "$(filed)" = 1 ] \
+  && pass "setup: hold 'vendor' opened through the stub backend and answered by the stakeholder" || flunk "setup: hold not answered"
+[ "$(state_py "$RECORD" "d.get('paused')")" = False ] && [ "$(state_py "$RECORD" "'directive' in d")" = False ] \
+  && pass "setup: project is not paused and has no directive set" || flunk "setup: record: $(cat "$RECORD")"
+snapshot unpaused
+bash "$S/gaia-project.sh" set "$SLUG" paused true >/dev/null
+[ "$(state_py "$RECORD" "d.get('paused')")" = True ] && pass "setup: project paused (paused: true)" || flunk "setup: could not pause"
+# Arm the "nothing else changed" assertion: with the clock frozen, `updated`
+# already reads $FROZEN_ISO, so a refusal that re-stamped it to "now" would be
+# invisible. Stamp the paused record's `updated` with a distinct value so any
+# re-stamp shows up as a changed field.
+UPDATED_SENTINEL="2026-09-22T12:34:56Z"
+python3 - "$RECORD" "$UPDATED_SENTINEL" <<'PY'
+import sys, os
+try:
+    import yaml
+    def load(p):
+        with open(p) as f: return yaml.safe_load(f)
+    def dump(p, d):
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f: yaml.safe_dump(d, f, sort_keys=False, allow_unicode=True)
+        os.replace(tmp, p)
+except ImportError:
+    import json
+    def load(p):
+        with open(p) as f: return json.load(f)
+    def dump(p, d):
+        tmp = p + ".tmp"
+        with open(tmp, "w") as f: json.dump(d, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, p)
+d = load(sys.argv[1]); d["updated"] = sys.argv[2]; dump(sys.argv[1], d)
+PY
+[ "$(state_py "$RECORD" "d.get('updated')")" = "$UPDATED_SENTINEL" ] && [ "$UPDATED_SENTINEL" != "$FROZEN_ISO" ] \
+  && pass "setup: paused record's 'updated' is $UPDATED_SENTINEL, distinct from the frozen now, so a re-stamp would be visible" \
+  || flunk "setup: could not stamp 'updated': $(state_py "$RECORD" "d.get('updated')")"
+snapshot paused
+
+# ---- refused_paused <label> <snapshot> <args...> ------------------------------
+# From <snapshot>, the run must: exit 3; print nothing on stdout; print exactly
+# "$PAUSED_MSG\n" on stderr; launch nothing; file no hold; write no run file;
+# append exactly one log entry whose text is $PAUSED_MSG to $RECORD and change
+# nothing else in it (`updated` included); create no other file in the
+# registry; leave the registry-wide log alone.
+refused_paused() {
+  local label="$1" snap="$2"; shift 2
+  restore "$snap"
+  local files_before state_before reglog_before
+  files_before="$(run_files)"; reglog_before="$(registry_log_lines)"
+  cp "$RECORD" "$TMP/record.before"
+  state_before="$(find "$GAIA_STATE_DIR" | sort)"
+  run_split "$S" "$@"
+  [ "$RC" -eq 3 ] && pass "$label: exits 3" || flunk "$label: rc=$RC: $(cat "$TMP/cur.out" "$TMP/cur.err")"
+  [ ! -s "$TMP/cur.out" ] && pass "$label: nothing on stdout" || flunk "$label: stdout: $(cat "$TMP/cur.out")"
+  printf '%s\n' "$PAUSED_MSG" >"$TMP/want.err"
+  cmp -s "$TMP/want.err" "$TMP/cur.err" && pass "$label: stderr is exactly '$PAUSED_MSG'" \
+    || flunk "$label: stderr is '$(cat "$TMP/cur.err")'"
+  [ "$(launches)" = 0 ] && pass "$label: the claude stub was not invoked" || flunk "$label: claude invoked: $(cat "$TMP/claude.argv")"
+  [ "$(filed)" = 0 ] && pass "$label: no hold filed with the backend" || flunk "$label: holds filed: $(cat "$TMP/holds.filed")"
+  [ "$(run_files)" = "$files_before" ] && pass "$label: no run record written" || flunk "$label: run files changed: $(run_files)"
+  [ "$(state_py "$RECORD" "d['log'][-1]['msg']")" = "$PAUSED_MSG" ] && pass "$label: the project log's new line is '$PAUSED_MSG'" \
+    || flunk "$label: last log line: $(state_py "$RECORD" "d['log'][-1]['msg']")"
+  [ "$(record_gained_one_line "$TMP/record.before" "$RECORD" "$PAUSED_MSG")" = True ] \
+    && pass "$label: exactly one new log line; every other field of the record, 'updated' included, is unchanged" \
+    || flunk "$label: record changed beyond one log line:
+$(diff "$TMP/record.before" "$RECORD")"
+  [ "$(state_py "$RECORD" "d.get('updated')")" = "$UPDATED_SENTINEL" ] && pass "$label: 'updated' still reads $UPDATED_SENTINEL (not re-stamped)" \
+    || flunk "$label: 'updated' was re-stamped to $(state_py "$RECORD" "d.get('updated')")"
+  [ "$(find "$GAIA_STATE_DIR" | sort)" = "$state_before" ] && pass "$label: no other file in the registry" \
+    || flunk "$label: registry files changed: $(find "$GAIA_STATE_DIR" | sort)"
+  [ "$(registry_log_lines)" = "$reglog_before" ] && pass "$label: registry-wide log untouched" || flunk "$label: registry log written"
+}
+
+# ---- refused_unreadable <label> <file> <args...> ------------------------------
+# Same, for a record that cannot be resolved inside the registry or parsed
+# (the caller stages the registry first): stderr exactly "refused: project
+# record <file> is unreadable\n", one new line in the registry-wide log ending
+# in that string, no project record touched.
+refused_unreadable() {
+  local label="$1" file="$2"; shift 2
+  local msg="refused: project record $file is unreadable"
+  local files_before reglog_before
+  files_before="$(run_files)"; reglog_before="$(registry_log_lines)"
+  rm -rf "$TMP/state.before"; cp -a "$GAIA_STATE_DIR" "$TMP/state.before"
+  run_split "$S" "$@"
+  [ "$RC" -eq 3 ] && pass "$label: exits 3" || flunk "$label: rc=$RC: $(cat "$TMP/cur.out" "$TMP/cur.err")"
+  [ ! -s "$TMP/cur.out" ] && pass "$label: nothing on stdout" || flunk "$label: stdout: $(cat "$TMP/cur.out")"
+  printf '%s\n' "$msg" >"$TMP/want.err"
+  cmp -s "$TMP/want.err" "$TMP/cur.err" && pass "$label: stderr is exactly '$msg'" || flunk "$label: stderr is '$(cat "$TMP/cur.err")'"
+  [ "$(launches)" = 0 ] && pass "$label: the claude stub was not invoked" || flunk "$label: claude invoked: $(cat "$TMP/claude.argv")"
+  [ "$(filed)" = 0 ] && pass "$label: no hold filed with the backend" || flunk "$label: holds filed"
+  [ "$(run_files)" = "$files_before" ] && pass "$label: no run record written" || flunk "$label: run files changed"
+  [ "$(registry_log_lines)" = "$((reglog_before + 1))" ] && pass "$label: registry-wide log gained exactly one line" \
+    || flunk "$label: registry log lines: $reglog_before -> $(registry_log_lines)"
+  case "$(tail -n 1 "$GAIA_STATE_DIR/registry.log")" in
+    *"$msg") pass "$label: that line ends with '$msg'" ;;
+    *) flunk "$label: registry log line: $(tail -n 1 "$GAIA_STATE_DIR/registry.log")" ;;
+  esac
+  if diff -r -x registry.log "$TMP/state.before" "$GAIA_STATE_DIR" >"$TMP/state.diff"; then
+    pass "$label: no project record touched"
+  else
+    flunk "$label: registry changed: $(cat "$TMP/state.diff")"
+  fi
+}
+
+# ---- 1. paused: every path a run can start ----------------------------------
+stage_done sess-fg
+refused_paused "paused, foreground" paused --project "$SLUG" --label fg -- "/gaia-init"
+stage_done sess-bg
+refused_paused "paused, background" paused --project "$SLUG" --label bg --background -- "/gaia-init"
+sleep 1
+[ "$(launches)" = 0 ] && [ "$(run_files | wc -l | tr -d ' ')" = "$(find "$TMP/snap/paused/hermes/gaia-runs" -type f | wc -l | tr -d ' ')" ] \
+  && pass "paused, background: still nothing launched, no run record a second later" \
+  || flunk "paused, background: something ran after the refusal"
+stage_done sess-q
+refused_paused "paused, resume after an answered hold" paused --project "$SLUG" --label resume --resume sess-q -- "Decision: approve. Continue."
+refused_paused "paused, project given as a path" paused --project "$TMP/projects/$SLUG" --label path -- "/gaia-init"
+
+# ---- 2. paused, reached by an alias of the record ----------------------------
+restore paused; ln -s "$SLUG.yaml" "$GAIA_STATE_DIR/alias.yaml"; snapshot paused-alias
+refused_paused "paused, symlink to the record (alias -> $SLUG)" paused-alias --project alias --label alias -- "/gaia-init"
+[ -L "$GAIA_STATE_DIR/alias.yaml" ] && [ "$(readlink "$GAIA_STATE_DIR/alias.yaml")" = "$SLUG.yaml" ] \
+  && pass "paused, symlink to the record: the symlink is still a symlink to $SLUG.yaml (the log went to the real record)" \
+  || flunk "paused, symlink to the record: alias.yaml was replaced"
+refused_paused "paused, relative path (./$SLUG)" paused --project "./$SLUG" --label rel -- "/gaia-init"
+refused_paused "paused, ../ walk (../projects/$SLUG)" paused --project "../projects/$SLUG" --label walk -- "/gaia-init"
+
+# ---- 3. records outside the registry directory are never read ---------------
+# An UNPAUSED record placed outside the registry: if it were read, the run
+# would proceed. It must be refused unread, as unreadable.
+restore paused
+cp "$TMP/snap/unpaused/hermes/projects/$SLUG.yaml" "$HERMES_HOME/outside.yaml"
+ln -s "$HERMES_HOME/outside.yaml" "$GAIA_STATE_DIR/escape.yaml"
+cp "$HERMES_HOME/outside.yaml" "$TMP/outside.before"
+refused_unreadable "outside the registry, ../ walk (../outside)" outside.yaml --project ../outside --label out1 -- "/gaia-init"
+refused_unreadable "outside the registry, symlink out (escape -> ../outside.yaml)" escape.yaml --project escape --label out2 -- "/gaia-init"
+cmp -s "$TMP/outside.before" "$HERMES_HOME/outside.yaml" && pass "outside the registry: the outside record is untouched" \
+  || flunk "outside the registry: the outside record was written"
+
+# ---- 4. malformed state fails closed -----------------------------------------
+restore unpaused
+printf '{ [\n' >"$GAIA_STATE_DIR/broken.yaml"
+python3 - "$RECORD" "$GAIA_STATE_DIR" <<'PY'
+import sys, os, json
+src, state_dir = sys.argv[1], sys.argv[2]
+try:
+    import yaml
+    def load(p):
+        with open(p) as f: return yaml.safe_load(f)
+    def dump(p, d):
+        with open(p, "w") as f: yaml.safe_dump(d, f, sort_keys=False)
+except ImportError:
+    def load(p):
+        with open(p) as f: return json.load(f)
+    def dump(p, d):
+        with open(p, "w") as f: json.dump(d, f, indent=2)
+base = load(src)
+for name, val in (("nonbool", 1), ("strbool", "true")):
+    d = dict(base); d["slug"] = name; d["paused"] = val; dump(os.path.join(state_dir, name + ".yaml"), d)
+d = dict(base); d["slug"] = "nokey"; del d["paused"]; dump(os.path.join(state_dir, "nokey.yaml"), d)
+PY
+refused_unreadable "malformed: unparseable record" broken.yaml --project broken --label m1 -- "/gaia-init"
+refused_unreadable "malformed: paused is an integer (1)" nonbool.yaml --project nonbool --label m2 -- "/gaia-init"
+refused_unreadable "malformed: paused is a string (\"true\")" strbool.yaml --project strbool --label m3 -- "/gaia-init"
+refused_unreadable "malformed: no paused key (fails closed, never 'not paused')" nokey.yaml --project nokey --label m4 -- "/gaia-init"
+refused_unreadable "no such record" nosuch.yaml --project nosuch --label m5 -- "/gaia-init"
+
+# ---- 5. unpaused: byte-identical to main, scenario by scenario ---------------
+# compare_scenario <name> <stage args...> -- <run args...>
+# From the `unpaused` snapshot, runs the scenario against main's copy and
+# against this branch's copy, capturing for each: the exit code, the combined
+# stdout+stderr, the whole $HERMES_HOME tree (run record, project record,
+# settings) and the stub logs. Both must exit 0 and invoke the stub once, and
+# the two raw captures must not differ in a single byte.
+compare_scenario() {
+  local name="$1"; shift
+  local stage_kind="$1"; shift
+  local stage_args=()
+  while [ "$1" != "--" ]; do stage_args+=("$1"); shift; done
+  shift
+  local copy sdir bg=0 a
+  for a in "$@"; do [ "$a" = "--background" ] && bg=1; done
+  for copy in main branch; do
+    if [ "$copy" = main ]; then sdir="$MAIN_S"; else sdir="$S"; fi
+    restore unpaused
+    if [ "$stage_kind" = done ]; then stage_done "${stage_args[@]}"; else stage "${stage_args[@]}"; fi
+    run_both "$sdir" "$@"
+    if [ "$bg" = 1 ]; then wait_for_file "$GAIA_RUNS_DIR/$SLUG/$FROZEN_STAMP-$name.json"; fi
+    local cap="$TMP/cap/$name/$copy"
+    rm -rf "$cap"; mkdir -p "$cap"
+    printf '%s\n' "$RC" >"$cap/rc"
+    cp "$TMP/cur.both" "$cap/out"
+    cp -a "$HERMES_HOME" "$cap/hermes"
+    cp "$TMP/claude.argv" "$cap/claude.argv"; cp "$TMP/claude.calls" "$cap/claude.calls"; cp "$TMP/holds.filed" "$cap/holds.filed"
+    [ "$RC" -eq 0 ] && pass "$name ($copy): exits 0" || flunk "$name ($copy): rc=$RC: $(cat "$TMP/cur.both")"
+    [ "$(launches)" = 1 ] && pass "$name ($copy): the claude stub was invoked exactly once" || flunk "$name ($copy): launches=$(launches)"
+    [ -f "$GAIA_RUNS_DIR/$SLUG/$FROZEN_STAMP-$name.json" ] && [ -f "$GAIA_RUNS_DIR/$SLUG/$FROZEN_STAMP-$name.meta" ] \
+      && pass "$name ($copy): run record $FROZEN_STAMP-$name written" || flunk "$name ($copy): no run record: $(run_files)"
+  done
+  if diff -r "$TMP/cap/$name/main" "$TMP/cap/$name/branch" >"$TMP/cap/$name/diff" && [ ! -s "$TMP/cap/$name/diff" ]; then
+    pass "$name: exit code, combined output, run record, project record and stub invocations are byte-identical to main"
+  else
+    flunk "$name: differs from main:
+$(cat "$TMP/cap/$name/diff")"
+  fi
+}
+
+compare_scenario fg done sess-fg -- --project "$SLUG" --label fg -- "/gaia-init"
+compare_scenario bg done sess-bg -- --project "$SLUG" --label bg --background -- "/gaia-init"
+compare_scenario resume done sess-q -- --project "$SLUG" --label resume --resume sess-q -- "Decision: approve. Continue."
+compare_scenario nodirective done sess-nd -- --project "$SLUG" --label nodirective -- "/gaia-create-prd"
+compare_scenario technical question sess-ci technical ci-platform "Which CI platform? (1) GitHub Actions — recommended; (2) GitLab CI." -- --project "$SLUG" --label technical -- "/gaia-init"
+
+# the resume scenario really resumed, and the technical question was really routed
+grep -q -- "--resume sess-q" "$TMP/cap/resume/branch/claude.argv" && pass "resume: claude was called with --resume sess-q" \
+  || flunk "resume: argv lacks --resume sess-q"
+OUT="$(cat "$TMP/cap/technical/branch/out")"
+[ "$(json_field status)" = question ] && [ "$(json_field audience)" = technical ] \
+  && pass "technical: routed as status=question, audience=technical" || flunk "technical: $OUT"
+
+# ---- 6. the existing suites, unfrozen -----------------------------------------
+run_suite() {
+  local t="$1"
+  if [ -n "$ORIG_PYTHONPATH_SET" ]; then
+    if env PATH="$ORIG_PATH" PYTHONPATH="$ORIG_PYTHONPATH" bash "$REPO_DIR/tests/$t" >"$TMP/$t.out" 2>&1; then
+      pass "tests/$t passes in full (exit 0)"
+    else
+      flunk "tests/$t FAILED:"; grep -E '^FAIL|gaia' "$TMP/$t.out" | head -20
+    fi
+  else
+    if env -u PYTHONPATH PATH="$ORIG_PATH" bash "$REPO_DIR/tests/$t" >"$TMP/$t.out" 2>&1; then
+      pass "tests/$t passes in full (exit 0)"
+    else
+      flunk "tests/$t FAILED:"; grep -E '^FAIL|gaia' "$TMP/$t.out" | head -20
+    fi
+  fi
+}
+run_suite verify-guard-opens-hold.sh
+run_suite verify-audience-no-reclassify.sh
+
+if [ "$fail" -eq 0 ]; then
+  echo "OK: a paused project refuses every way a run can start (foreground, background, resume, any alias of the record) before any backend call; malformed state fails closed; an unpaused project is byte-identical to main"
+else
+  echo "FAILED"; exit 1
+fi
